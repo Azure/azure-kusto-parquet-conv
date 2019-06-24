@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package >
+  <metadata>
+    <id>pq2json</id>
+    <version>0.1.0</version>
+    <authors>Evgeney Ryzhyk</authors>
+    <owners>Evgeney Ryzhyk</owners>
+    <license type="expression">MIT</license>
+    <projectUrl>https://github.com/Azure/azure-kusto-parquet-conv</projectUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>Parquet to JSON (line delimited) converter tool.</description>
+    <releaseNotes>Initial release.</releaseNotes>
+    <copyright>Copyright 2019</copyright>
+    <tags></tags>
+    <dependencies>
+    </dependencies>
+  </metadata>
+  <files>
+      <file src="target\release\pq2json.exe" target="tools\x64" />
+  </files>
+</package>
