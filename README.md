@@ -1,3 +1,16 @@
+Parquet to JSON (line delimited) converter tool.
+
+# Building
+
+Requires nightly Rust, tested with `1.37.0-nightly (de7c4e423 2019-06-23)`:
+
+`rustup toolchain add nightly`
+
+`cargo +nightly build --release`
+
+# Running
+
+See `pq2json --help`.
 
 # Contributing
 
