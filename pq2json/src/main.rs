@@ -42,15 +42,6 @@ fn main() {
 fn convert(input: &str, output: &str) -> Result<(), Box<dyn Error>> {
     let file = File::open(&Path::new(input))?;
     let reader = SerializedFileReader::new(file)?;
-
-    /*
-    let file_meta = reader.metadata().file_metadata();
-    let schema = file_meta.schema();
-    let mut schema_bytes = Vec::new();
-    print_schema(&mut schema_bytes, schema);
-    println!("Schema:\n{}\n\n", String::from_utf8(schema_bytes).unwrap());
-    */
-
     let mut iter = reader.get_row_iter(None)?;
     while let Some(record) = iter.next() {
         let value = row_to_value(&record)?;
@@ -92,7 +83,9 @@ fn row_to_value(row: &Row) -> Result<Value, Box<dyn Error>> {
         let name = row.field_name(i);
         let field_type = row.field_type(i);
         let value = element_to_value!(field_type, row, i);
-        map.insert(name.to_string(), value);
+        if !value.is_null() {
+            map.insert(name.to_string(), value);
+        }
     }
     Ok(Value::Object(map))
 }
@@ -121,7 +114,9 @@ fn map_to_value(map: &Map) -> Result<Value, Box<dyn Error>> {
 
         let val_ty = values.element_type(i);
         let value = element_to_value!(val_ty, values, i);
-        jsmap.insert(key, value);
+        if !value.is_null() {
+            jsmap.insert(key, value);
+        }
     }
     Ok(Value::Object(jsmap))
 }
