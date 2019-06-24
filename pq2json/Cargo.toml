@@ -10,3 +10,4 @@ parquet = { git = "https://github.com/rzheka/arrow.git", branch = "dev" }
 itertools = "0.8"
 serde = "1"
 serde_json = "1"
+num-bigint = "0.2"
