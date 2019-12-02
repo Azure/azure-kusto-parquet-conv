@@ -37,7 +37,7 @@ dependencies = [
 [[package]]
 name = "arrow"
 version = "0.14.0-SNAPSHOT"
-source = "git+https://github.com/rzheka/arrow.git?branch=dev#6b48f2284be5ff2f8b8541e40d21947f089ce0c9"
+source = "git+https://github.com/rzheka/arrow.git?branch=dev#109fae337b03f5b06d44a87195f0fd1d30d06228"
 dependencies = [
  "chrono 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "csv 1.0.7 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -530,7 +530,7 @@ dependencies = [
 [[package]]
 name = "parquet"
 version = "0.14.0-SNAPSHOT"
-source = "git+https://github.com/rzheka/arrow.git?branch=dev#6b48f2284be5ff2f8b8541e40d21947f089ce0c9"
+source = "git+https://github.com/rzheka/arrow.git?branch=dev#109fae337b03f5b06d44a87195f0fd1d30d06228"
 dependencies = [
  "arrow 0.14.0-SNAPSHOT (git+https://github.com/rzheka/arrow.git?branch=dev)",
  "brotli 2.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
