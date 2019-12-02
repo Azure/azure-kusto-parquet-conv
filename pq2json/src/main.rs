@@ -3,8 +3,10 @@ use num_bigint::{BigInt, Sign};
 use parquet::data_type::Decimal;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::{FieldType, List, ListAccessor, Map, MapAccessor, Row, RowAccessor};
+use parquet::schema::types::{Type as SchemaType};
 use parquet::schema::printer::{print_file_metadata, print_parquet_metadata};
 use serde_json::{Number, Value};
+use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -61,6 +63,14 @@ fn main() {
                 .required(false),
         )
         .arg(
+            Arg::with_name("columns")
+                .short("c")
+                .long("columns")
+                .help("Comma separated top-level columns to select")
+                .takes_value(true)
+                .required(false),
+        )
+        .arg(
             Arg::with_name("output")
                 .short("o")
                 .long("output")
@@ -100,11 +110,14 @@ fn main() {
         _ => TimestampRendering::IsoStr,
     };
 
+    let columns: &str = matches.value_of("columns").unwrap_or("");
+
     let settings = Settings {
         omit_nulls: matches.is_present("omit-nulls") || matches.is_present("prune"),
         omit_empty_bags: matches.is_present("omit-empty-bags") || matches.is_present("prune"),
         omit_empty_lists: matches.is_present("omit-empty-lists") || matches.is_present("prune"),
-        timestamp_rendering,
+        timestamp_rendering: timestamp_rendering,
+        columns: if columns.is_empty() { None } else { Some(columns.split(",").map(|s| s.to_string()).collect()) }
     };
 
     let res = if matches.is_present("schema") {
@@ -128,6 +141,7 @@ struct Settings {
     omit_empty_bags: bool,
     omit_empty_lists: bool,
     timestamp_rendering: TimestampRendering,
+    columns: Option<Vec<String>>
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -152,7 +166,10 @@ fn convert(settings: &Settings, input: &str, output: &str) -> Result<(), Box<dyn
         )) as Box<dyn Write>
     };
 
-    let mut iter = reader.get_row_iter(None)?;
+    let schema = settings.columns.as_ref()
+        .map(|c| get_projected_schema(&reader, &c).unwrap());
+
+    let mut iter = reader.get_row_iter(schema)?;
     while let Some(record) = iter.next() {
         let value = top_level_row_to_value(settings, &record)?;
         writeln!(writer, "{}", serde_json::to_string(&value)?)?;
@@ -177,6 +194,22 @@ fn print_schema(input: &str) -> Result<(), Box<dyn Error>> {
     println!("=================================================");
     println!("{}", String::from_utf8(output)?);
     Ok(())
+}
+
+fn get_projected_schema(reader: &SerializedFileReader<File>, columns: &Vec<String>) -> Result<SchemaType, Box<dyn Error>> {
+    let file_meta = reader.metadata().file_metadata();
+    let mut schema_fields = HashMap::new();
+    for field in file_meta.schema().get_fields().iter() {
+        schema_fields.insert(field.name().to_owned(), field);
+    }
+    // TODO: return error if non-existent column specified
+    let mut projected_fields = columns.iter()
+        .map(|c| schema_fields[c].clone())
+        .collect();
+    Ok(SchemaType::group_type_builder("schema")
+        .with_fields(&mut projected_fields)
+        .build()
+        .unwrap())
 }
 
 macro_rules! element_to_value {
