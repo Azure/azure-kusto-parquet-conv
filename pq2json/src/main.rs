@@ -206,7 +206,7 @@ fn get_projected_schema(reader: &SerializedFileReader<File>, columns: &Vec<Strin
     let mut projected_fields = columns.iter()
         .map(|c| schema_fields[c].clone())
         .collect();
-    Ok(SchemaType::group_type_builder("schema")
+    Ok(SchemaType::group_type_builder(&file_meta.schema().get_basic_info().name())
         .with_fields(&mut projected_fields)
         .build()
         .unwrap())
