@@ -2,18 +2,17 @@
 <package >
   <metadata>
     <id>pq2json</id>
-    <version>0.1.4</version>
+    <version>0.1.5</version>
     <authors>Evgeney Ryzhyk</authors>
     <owners>Evgeney Ryzhyk</owners>
     <license type="expression">MIT</license>
     <projectUrl>https://github.com/Azure/azure-kusto-parquet-conv</projectUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <description>Parquet to JSON (line delimited) converter tool.</description>
-    <releaseNotes>Fixed crash when reading null byte array field.</releaseNotes>
-    <copyright>Copyright 2019</copyright>
+    <releaseNotes>Support output to pseudo-CSV format.</releaseNotes>
+    <copyright>Copyright 2020</copyright>
     <tags></tags>
-    <dependencies>
-    </dependencies>
+    <dependencies></dependencies>
   </metadata>
   <files>
       <file src="target\release\pq2json.exe" target="tools\x64" />
