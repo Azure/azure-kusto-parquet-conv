@@ -145,6 +145,7 @@ fn top_level_rows_to_csv(
             let value = element_to_value!(field_type, row, i, settings);
             csv_writer.write_field(value_to_csv(&value))?;
         }
+        csv_writer.write_record(None::<&[u8]>)?;
         writeln!(writer, "{}", String::from_utf8(csv_writer.into_inner()?)?)?;
     }
     Ok(())
