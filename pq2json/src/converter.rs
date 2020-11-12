@@ -12,6 +12,7 @@ use parquet::schema::types::Type as SchemaType;
 use serde_json::{Number, Value};
 
 use crate::settings::{Settings, TimestampRendering};
+use csv::Terminator;
 use parquet::record::reader::RowIter;
 
 const WRITER_BUF_CAP: usize = 256 * 1024;
@@ -139,7 +140,9 @@ fn top_level_rows_to_csv(
     mut writer: Box<dyn Write>,
 ) -> Result<(), Box<dyn Error>> {
     while let Some(row) = rows.next() {
-        let mut csv_writer = csv::Writer::from_writer(vec![]);
+        let mut csv_writer = csv::WriterBuilder::new()
+            .terminator(Terminator::Any(b'\r'))
+            .from_writer(vec![]);
         for i in 0..row.len() {
             let field_type = row.get_field_type(i);
             let value = element_to_value!(field_type, row, i, settings);
