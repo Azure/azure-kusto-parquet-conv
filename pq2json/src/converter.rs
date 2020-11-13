@@ -160,7 +160,8 @@ fn value_to_csv(value: &Value) -> String {
         Value::Bool(v) => v.to_string(),
         Value::Number(ref v) => {
             if v.is_f64() {
-                format!("{:e}", v.as_f64().unwrap())
+                let mut buffer = ryu::Buffer::new();
+                buffer.format(v.as_f64().unwrap()).to_owned()
             } else if v.is_u64() {
                 format!("{}", v.as_u64().unwrap())
             } else {
