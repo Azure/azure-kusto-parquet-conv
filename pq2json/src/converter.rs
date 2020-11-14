@@ -12,6 +12,7 @@ use parquet::schema::types::Type as SchemaType;
 use serde_json::{Number, Value};
 
 use crate::settings::{Settings, TimestampRendering};
+use chrono::Duration;
 use csv::Terminator;
 use parquet::record::reader::RowIter;
 
@@ -102,7 +103,7 @@ macro_rules! element_to_value {
             FieldType::Decimal => Value::String(decimal_to_string($obj.get_decimal($i)?)),
             FieldType::Str => Value::String($obj.get_string($i)?.to_string()),
             FieldType::Bytes => bytes_to_value($obj.get_bytes($i)?.data()),
-            FieldType::Date => Value::Number($obj.get_date($i)?.into()),
+            FieldType::Date => date_to_value($obj.get_date($i)?)?,
             FieldType::TimestampMillis => {
                 timestamp_to_value($settings, $obj.get_timestamp_millis($i)?)?
             }
@@ -274,6 +275,17 @@ fn timestamp_to_value(settings: &Settings, ts: u64) -> Result<Value, Box<dyn Err
         }
         TimestampRendering::UnixMs => Ok(Value::Number(ts.into())),
     }
+}
+
+fn date_to_value(days_from_epoch: u32) -> Result<Value, Box<dyn Error>> {
+    let date = match chrono::NaiveDate::from_ymd(1970, 1, 1)
+        .checked_add_signed(Duration::days(days_from_epoch as i64))
+    {
+        Some(date) => date,
+        None => return Ok(Value::Null),
+    };
+    let iso_str = date.format("%Y-%m-%d").to_string();
+    Ok(Value::String(iso_str))
 }
 
 fn decimal_to_string(decimal: &Decimal) -> String {
