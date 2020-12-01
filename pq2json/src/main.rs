@@ -88,6 +88,13 @@ fn main() {
                 .required(false),
         )
         .arg(
+            Arg::with_name("cslschema")
+                .long("cslschema")
+                .help("Print Kusto schema")
+                .takes_value(false)
+                .required(false),
+        )
+        .arg(
             Arg::with_name("INPUT")
                 .help("Input file to use")
                 .required(true)
@@ -124,6 +131,8 @@ fn main() {
 
     let res = if matches.is_present("schema") {
         schema::print_schema(input)
+    } else if matches.is_present("cslschema") {
+        schema::print_csl_schema(input)
     } else {
         converter::convert(&settings, input, output)
     };
