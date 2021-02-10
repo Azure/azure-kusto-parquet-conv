@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "pq2json"
-	]
+  "pq2json"
+]
 
 [profile.dev]
 

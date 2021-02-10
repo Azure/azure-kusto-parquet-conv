@@ -2,14 +2,14 @@
 <package >
   <metadata>
     <id>pq2json</id>
-    <version>0.1.6</version>
+    <version>0.1.7</version>
     <authors>Evgeney Ryzhyk</authors>
     <owners>Evgeney Ryzhyk</owners>
     <license type="expression">MIT</license>
     <projectUrl>https://github.com/Azure/azure-kusto-parquet-conv</projectUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <description>Parquet to JSON (line delimited) converter tool.</description>
-    <releaseNotes>Add --cslschema option for returning Kusto-compatible schema.</releaseNotes>
+    <releaseNotes>Support numeric keys in MAP type</releaseNotes>
     <copyright>Copyright 2020</copyright>
     <tags></tags>
     <dependencies></dependencies>

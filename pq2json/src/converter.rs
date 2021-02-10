@@ -215,9 +215,19 @@ fn map_to_value(settings: &Settings, map: &Map) -> Result<Value, Box<dyn Error>>
     for i in 0..map.len() {
         let key_ty = keys.get_element_type(i);
         let key = match key_ty {
+            FieldType::Null => String::from("null"),
+            FieldType::Bool => keys.get_bool(i)?.to_string(),
+            FieldType::Byte => keys.get_byte(i)?.to_string(),
+            FieldType::Short => keys.get_short(i)?.to_string(),
+            FieldType::Int => keys.get_int(i)?.to_string(),
+            FieldType::Long => keys.get_long(i)?.to_string(),
+            FieldType::UByte => keys.get_ubyte(i)?.to_string(),
+            FieldType::UShort => keys.get_ushort(i)?.to_string(),
+            FieldType::UInt => keys.get_uint(i)?.to_string(),
+            FieldType::ULong => keys.get_ulong(i)?.to_string(),
             FieldType::Str => keys.get_string(i)?.to_string(),
             // TODO: return error here
-            _ => panic!("Non-string key"),
+            _ => panic!("Unsupported map key"),
         };
 
         let val_ty = values.get_element_type(i);
