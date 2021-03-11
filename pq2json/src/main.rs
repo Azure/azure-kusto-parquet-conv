@@ -31,6 +31,16 @@ fn main() {
                 .required(false),
         )
         .arg(
+            Arg::with_name("convert-types")
+                .short("r")
+                .long("convert-types")
+                .help(
+                    "Implicit Parquet to Kusto types conversion (e.g. U64 into long)"
+                )
+                .takes_value(false)
+                .required(false),
+        )
+        .arg(
             Arg::with_name("prune")
                 .short("p")
                 .long("prune")
@@ -123,6 +133,7 @@ fn main() {
         omit_empty_bags: matches.is_present("omit-empty-bags") || matches.is_present("prune"),
         timestamp_rendering,
         omit_empty_lists: matches.is_present("omit-empty-lists") || matches.is_present("prune"),
+        convert_types: matches.is_present("convert-types"),
         columns: matches
             .value_of("columns")
             .map(|columns| columns.split(",").map(|s| s.to_string()).collect()),

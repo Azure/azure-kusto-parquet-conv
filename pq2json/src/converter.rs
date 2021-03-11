@@ -97,7 +97,7 @@ macro_rules! element_to_value {
             FieldType::UByte => Value::Number($obj.get_ubyte($i)?.into()),
             FieldType::UShort => Value::Number($obj.get_ushort($i)?.into()),
             FieldType::UInt => Value::Number($obj.get_uint($i)?.into()),
-            FieldType::ULong => Value::Number($obj.get_ulong($i)?.into()),
+            FieldType::ULong => ulong_to_value($obj.get_ulong($i)?, &$settings),
             FieldType::Float => float_to_value($obj.get_float($i)? as f64),
             FieldType::Double => float_to_value($obj.get_double($i)?),
             FieldType::Decimal => Value::String(decimal_to_string($obj.get_decimal($i)?)),
@@ -256,6 +256,14 @@ fn float_to_value(f: f64) -> Value {
     Number::from_f64(f)
         .map(|n| Value::Number(n))
         .unwrap_or_else(|| Value::Null)
+}
+
+fn ulong_to_value(l: u64, settings: &Settings) -> Value {
+    if settings.convert_types {
+        Value::Number((l as i64).into())
+    } else {
+        Value::Number(l.into())
+    }
 }
 
 const TICKS_TILL_UNIX_TIME: u64 = 621355968000000000u64;
