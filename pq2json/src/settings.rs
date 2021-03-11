@@ -3,6 +3,7 @@ pub struct Settings {
     pub omit_nulls: bool,
     pub omit_empty_bags: bool,
     pub omit_empty_lists: bool,
+    pub convert_types: bool,
     pub timestamp_rendering: TimestampRendering,
     pub columns: Option<Vec<String>>,
     pub csv: bool,
