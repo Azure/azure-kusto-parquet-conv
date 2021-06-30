@@ -43,15 +43,16 @@ pub fn convert(
         None => Box::new(BufWriter::with_capacity(WRITER_BUF_CAP, io::stdout())) as Box<dyn Write>,
     };
 
+    let mut missing_columns = std::collections::HashSet::new();
     let schema = settings
         .columns
         .as_ref()
-        .map(|c| projected_schema(&reader, &c).unwrap());
+        .map(|c| projected_schema(&reader, &c, &mut missing_columns).unwrap());
 
     let rows = reader.get_row_iter(schema)?;
 
     if settings.csv {
-        top_level_rows_to_csv(&settings, rows, writer)
+        top_level_rows_to_csv(&settings, rows, missing_columns, writer)
     } else {
         top_level_rows_to_json(&settings, rows, writer)
     }
@@ -60,6 +61,7 @@ pub fn convert(
 fn projected_schema(
     reader: &SerializedFileReader<File>,
     columns: &Vec<String>,
+    missing_columns: &mut std::collections::HashSet<std::string::String>,
 ) -> Result<SchemaType, Box<dyn Error>> {
     let file_meta = reader.metadata().file_metadata();
     let mut schema_fields = HashMap::new();
@@ -67,21 +69,22 @@ fn projected_schema(
         schema_fields.insert(field.name().to_owned(), field);
     }
 
-    let mut projected_fields = columns
-        .iter()
-        .map(|c| {
-            schema_fields
-                .get_mut(c)
-                .expect(format!("column '{}' doesn't exist", c).as_str())
-                .clone()
-        })
-        .collect();
+    let mut projected_fields = Vec::new();
+
+    for c in columns.iter() {
+        let res = schema_fields.get_mut(c);
+
+        match res {
+            Some(ptr) => { projected_fields.push(ptr.clone());  }
+            None => { missing_columns.insert(c.clone()); }
+        }
+    }
 
     Ok(
         SchemaType::group_type_builder(&file_meta.schema().get_basic_info().name())
             .with_fields(&mut projected_fields)
             .build()
-            .unwrap(),
+            .unwrap()
     )
 }
 
@@ -138,17 +141,43 @@ fn top_level_rows_to_json(
 fn top_level_rows_to_csv(
     settings: &Settings,
     mut rows: RowIter,
+    missing_columns: std::collections::HashSet<std::string::String>,
     mut writer: Box<dyn Write>,
 ) -> Result<(), Box<dyn Error>> {
     while let Some(row) = rows.next() {
         let mut csv_writer = csv::WriterBuilder::new()
             .terminator(Terminator::Any(b'\r'))
             .from_writer(vec![]);
-        for i in 0..row.len() {
-            let field_type = row.get_field_type(i);
-            let value = element_to_value!(field_type, row, i, settings);
-            csv_writer.write_field(value_to_csv(&value))?;
-        }
+        let mut column_idx = 0;
+        let columns = settings.columns.as_ref();
+        
+        match columns {
+            Some(cols) => {      
+                // Produce empty values for columns specified by --columns argument, but missing in the file  
+                for col in cols {
+                    let value = 
+                        if missing_columns.contains(col) { 
+                                Value::Null
+                        } else {           
+                            let field_type = row.get_field_type(column_idx);
+                            let val = element_to_value!(field_type, row, column_idx, settings);
+                            column_idx = column_idx +1;
+                            val
+                        };
+    
+                    csv_writer.write_field(value_to_csv(&value))?;
+                }
+            },
+            None => {
+                // No columns specified by --columns argument
+                for i in 0..row.len() {
+                    let field_type = row.get_field_type(i);
+                    let value = element_to_value!(field_type, row, i, settings);
+                    csv_writer.write_field(value_to_csv(&value))?;
+                }
+            }
+        };
+
         csv_writer.write_record(None::<&[u8]>)?;
         writeln!(writer, "{}", String::from_utf8(csv_writer.into_inner()?)?)?;
     }
