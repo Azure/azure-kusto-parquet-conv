@@ -75,8 +75,12 @@ fn projected_schema(
         let res = schema_fields.get_mut(c);
 
         match res {
-            Some(ptr) => { projected_fields.push(ptr.clone());  }
-            None => { missing_columns.insert(c.clone()); }
+            Some(ptr) => {
+                projected_fields.push(ptr.clone());
+            }
+            None => {
+                missing_columns.insert(c.clone());
+            }
         }
     }
 
@@ -84,7 +88,7 @@ fn projected_schema(
         SchemaType::group_type_builder(&file_meta.schema().get_basic_info().name())
             .with_fields(&mut projected_fields)
             .build()
-            .unwrap()
+            .unwrap(),
     )
 }
 
@@ -150,24 +154,23 @@ fn top_level_rows_to_csv(
             .from_writer(vec![]);
         let mut column_idx = 0;
         let columns = settings.columns.as_ref();
-        
+
         match columns {
-            Some(cols) => {      
-                // Produce empty values for columns specified by --columns argument, but missing in the file  
+            Some(cols) => {
+                // Produce empty values for columns specified by --columns argument, but missing in the file
                 for col in cols {
-                    let value = 
-                        if missing_columns.contains(col) { 
-                                Value::Null
-                        } else {           
-                            let field_type = row.get_field_type(column_idx);
-                            let val = element_to_value!(field_type, row, column_idx, settings);
-                            column_idx = column_idx +1;
-                            val
-                        };
-    
+                    let value = if missing_columns.contains(col) {
+                        Value::Null
+                    } else {
+                        let field_type = row.get_field_type(column_idx);
+                        let val = element_to_value!(field_type, row, column_idx, settings);
+                        column_idx += 1;
+                        val
+                    };
+
                     csv_writer.write_field(value_to_csv(&value))?;
                 }
-            },
+            }
             None => {
                 // No columns specified by --columns argument
                 for i in 0..row.len() {

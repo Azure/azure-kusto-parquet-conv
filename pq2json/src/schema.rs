@@ -49,22 +49,23 @@ pub fn print_csl_schema(input_file: &str) -> Result<(), Box<dyn Error>> {
     let schema_desc = file_meta.schema_descr();
 
     let fields = match schema_desc.root_schema() {
-        &Type::GroupType { ref fields, .. } => {
-            fields
-                .iter()
-                .map(|field| field_csl_schema(field))
-                .collect::<Vec<(&str, &str)>>()
-        }
+        &Type::GroupType { ref fields, .. } => fields
+            .iter()
+            .map(|field| field_csl_schema(field))
+            .collect::<Vec<(&str, &str)>>(),
         _ => panic!("root schema is expected to be of group type!"),
     };
 
     let json_arr = Value::Array(
-        fields.iter().map(|(field_name, field_type)| {
-            let mut map = serde_json::Map::with_capacity(2);
-            map.insert(String::from("name"), Value::String(field_name.to_string()));
-            map.insert(String::from("type"), Value::String(field_type.to_string()));
-            Value::Object(map)
-        }).collect_vec()
+        fields
+            .iter()
+            .map(|(field_name, field_type)| {
+                let mut map = serde_json::Map::with_capacity(2);
+                map.insert(String::from("name"), Value::String(field_name.to_string()));
+                map.insert(String::from("type"), Value::String(field_type.to_string()));
+                Value::Object(map)
+            })
+            .collect_vec(),
     );
     println!("{}", serde_json::to_string(&json_arr)?);
     Ok(())
@@ -72,7 +73,11 @@ pub fn print_csl_schema(input_file: &str) -> Result<(), Box<dyn Error>> {
 
 fn field_csl_schema(field_type: &Type) -> (&str, &str) {
     match field_type {
-        Type::PrimitiveType { ref basic_info, physical_type, .. } => {
+        Type::PrimitiveType {
+            ref basic_info,
+            physical_type,
+            ..
+        } => {
             let csl_type = match physical_type {
                 PhysicalType::BOOLEAN => "bool",
                 PhysicalType::BYTE_ARRAY => match basic_info.logical_type() {
@@ -83,18 +88,18 @@ fn field_csl_schema(field_type: &Type) -> (&str, &str) {
                 PhysicalType::FIXED_LEN_BYTE_ARRAY => match basic_info.logical_type() {
                     LogicalType::DECIMAL => "real",
                     _ => "dynamic",
-                }
+                },
                 PhysicalType::DOUBLE | PhysicalType::FLOAT => "real",
                 PhysicalType::INT32 => match basic_info.logical_type() {
                     LogicalType::DATE => "datetime",
                     LogicalType::DECIMAL => "real",
                     _ => "long",
-                }
+                },
                 PhysicalType::INT64 => match basic_info.logical_type() {
                     LogicalType::TIMESTAMP_MILLIS | LogicalType::TIMESTAMP_MICROS => "datetime",
                     LogicalType::DECIMAL => "real",
-                    _ => "long"
-                }
+                    _ => "long",
+                },
                 PhysicalType::INT96 => "datetime",
             };
             (basic_info.name(), csl_type)
