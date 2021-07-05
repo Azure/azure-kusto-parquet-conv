@@ -34,9 +34,7 @@ fn main() {
             Arg::with_name("convert-types")
                 .short("r")
                 .long("convert-types")
-                .help(
-                    "Implicit Parquet to Kusto types conversion (e.g. U64 into long)"
-                )
+                .help("Implicit Parquet to Kusto types conversion (e.g. U64 into long)")
                 .takes_value(false)
                 .required(false),
         )
