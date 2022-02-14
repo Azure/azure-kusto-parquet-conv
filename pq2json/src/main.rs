@@ -102,6 +102,13 @@ fn main() {
                 .takes_value(false)
                 .required(false),
         )
+		.arg(
+            Arg::with_name("rowgroups")
+                .long("rowgroups")
+                .help("Print Row Groups Metadata")
+                .takes_value(false)
+                .required(false),
+        )
         .arg(
             Arg::with_name("INPUT")
                 .help("Input file to use")
@@ -142,6 +149,8 @@ fn main() {
         schema::print_schema(input)
     } else if matches.is_present("cslschema") {
         schema::print_csl_schema(input)
+    } else if matches.is_present("rowgroups") {
+        schema::print_row_groups_metadata(input)
     } else {
         converter::convert(&settings, input, output)
     };

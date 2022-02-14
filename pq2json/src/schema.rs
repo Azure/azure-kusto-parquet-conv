@@ -8,6 +8,7 @@ use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::schema::printer::{print_file_metadata, print_parquet_metadata};
 use parquet::schema::types::Type;
 use serde_json::Value;
+use serde::Serialize;
 
 /// Prints Parquet file schema information
 ///
@@ -106,4 +107,49 @@ fn field_csl_schema(field_type: &Type) -> (&str, &str) {
         }
         Type::GroupType { ref basic_info, .. } => (basic_info.name(), "dynamic"),
     }
+}
+
+/// Prints limited row groups metadata of a specified Parquet file as JSON,
+/// for each row group its size in bytes and the number of rows.
+///
+/// Arguments:
+///
+/// * `input_file` - Parquet file path
+///
+pub fn print_row_groups_metadata(input_file: &str) -> Result<(), Box<dyn Error>> {
+    let file = File::open(&Path::new(input_file))?;
+    let reader = SerializedFileReader::new(file)?;
+    let row_groups_count = reader.metadata().num_row_groups();
+    let row_groups = Value::Array(
+        reader
+            .metadata()
+            .row_groups()
+            .iter()
+            .map(|row_group_metadata| {
+                let mut map = serde_json::Map::with_capacity(2);
+                map.insert(
+                    String::from("numberOfRows"),
+                    Value::String(row_group_metadata.num_rows().to_string()),
+                );
+                map.insert(
+                    String::from("totalByteSize"),
+                    Value::String(row_group_metadata.total_byte_size().to_string()),
+                );
+                Value::Object(map)
+            })
+            .collect_vec(),
+    );
+
+    let row_groups_object = RowGroups {
+        count: row_groups_count,
+        row_groups,
+    };
+    println!("{}", serde_json::to_string(&row_groups_object)?);
+    Ok(())
+}
+
+#[derive(Serialize)]
+pub struct RowGroups {
+    pub count: usize,
+    pub row_groups: Value,
 }
