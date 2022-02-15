@@ -8,7 +8,6 @@ use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::schema::printer::{print_file_metadata, print_parquet_metadata};
 use parquet::schema::types::Type;
 use serde_json::Value;
-use serde::Serialize;
 
 /// Prints Parquet file schema information
 ///
@@ -119,7 +118,6 @@ fn field_csl_schema(field_type: &Type) -> (&str, &str) {
 pub fn print_row_groups_metadata(input_file: &str) -> Result<(), Box<dyn Error>> {
     let file = File::open(&Path::new(input_file))?;
     let reader = SerializedFileReader::new(file)?;
-    let row_groups_count = reader.metadata().num_row_groups();
     let row_groups = Value::Array(
         reader
             .metadata()
@@ -140,16 +138,6 @@ pub fn print_row_groups_metadata(input_file: &str) -> Result<(), Box<dyn Error>>
             .collect_vec(),
     );
 
-    let row_groups_object = RowGroups {
-        count: row_groups_count,
-        row_groups,
-    };
-    println!("{}", serde_json::to_string(&row_groups_object)?);
+    println!("{}", serde_json::to_string(&row_groups)?);
     Ok(())
-}
-
-#[derive(Serialize)]
-pub struct RowGroups {
-    pub count: usize,
-    pub row_groups: Value,
 }
