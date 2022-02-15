@@ -102,7 +102,7 @@ fn main() {
                 .takes_value(false)
                 .required(false),
         )
-		.arg(
+        .arg(
             Arg::with_name("rowgroups")
                 .long("rowgroups")
                 .help("Print Row Groups Metadata")
