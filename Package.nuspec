@@ -2,14 +2,14 @@
 <package >
   <metadata>
     <id>pq2json</id>
-    <version>0.1.10</version>
+    <version>0.1.11</version>
     <authors>Evgeney Ryzhyk</authors>
     <owners>Evgeney Ryzhyk</owners>
     <license type="expression">MIT</license>
     <projectUrl>https://github.com/Azure/azure-kusto-parquet-conv</projectUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <description>Parquet to JSON (line delimited) converter tool.</description>
-    <releaseNotes>Added support for producing empty values for columns missing from the file</releaseNotes>
+    <releaseNotes>Added optional argument to return row groups metadata</releaseNotes>
     <copyright>Copyright 2020</copyright>
     <tags></tags>
     <dependencies></dependencies>
