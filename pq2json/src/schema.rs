@@ -3,7 +3,7 @@ use std::fs::File;
 use std::path::Path;
 
 use itertools::Itertools;
-use parquet::basic::{LogicalType, Type as PhysicalType};
+use parquet::basic::{ConvertedType, Type as PhysicalType};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::schema::printer::{print_file_metadata, print_parquet_metadata};
 use parquet::schema::types::Type;
@@ -78,33 +78,37 @@ fn field_csl_schema(field_type: &Type) -> (&str, &str) {
             physical_type,
             ..
         } => {
-            let csl_type = match physical_type {
-                PhysicalType::BOOLEAN => "bool",
-                PhysicalType::BYTE_ARRAY => match basic_info.logical_type() {
-                    LogicalType::UTF8 | LogicalType::ENUM => "string",
-                    LogicalType::DECIMAL => "decimal",
-                    _ => "dynamic",
-                },
-                PhysicalType::FIXED_LEN_BYTE_ARRAY => match basic_info.logical_type() {
-                    LogicalType::DECIMAL => "decimal",
-                    _ => "dynamic",
-                },
-                PhysicalType::DOUBLE | PhysicalType::FLOAT => "real",
-                PhysicalType::INT32 => match basic_info.logical_type() {
-                    LogicalType::DATE => "datetime",
-                    LogicalType::DECIMAL => "real",
-                    _ => "int",
-                },
-                PhysicalType::INT64 => match basic_info.logical_type() {
-                    LogicalType::TIMESTAMP_MILLIS | LogicalType::TIMESTAMP_MICROS => "datetime",
-                    LogicalType::DECIMAL => "real",
-                    _ => "long",
-                },
-                PhysicalType::INT96 => "datetime",
+            let csl_type = match basic_info.converted_type() {
+                ConvertedType::UTF8 => "string",
+                ConvertedType::TIMESTAMP_MICROS
+                | ConvertedType::TIMESTAMP_MILLIS
+                | ConvertedType::DATE => "datetime",
+                ConvertedType::INTERVAL => "timespan",
+                ConvertedType::DECIMAL => "decimal",
+                ConvertedType::LIST
+                | ConvertedType::MAP
+                | ConvertedType::MAP_KEY_VALUE
+                | ConvertedType::JSON => "dynamic",
+                ConvertedType::UINT_32 => "long",
+                ConvertedType::UINT_64 => "decimal",
+                _ => parquet_physical_to_csl_type(physical_type),
             };
             (basic_info.name(), csl_type)
         }
         Type::GroupType { ref basic_info, .. } => (basic_info.name(), "dynamic"),
+    }
+}
+
+fn parquet_physical_to_csl_type(parquet_type: &PhysicalType) -> &str {
+    match parquet_type {
+        PhysicalType::BOOLEAN => "bool",
+        PhysicalType::INT32 => "int",
+        PhysicalType::INT64 => "long",
+        PhysicalType::INT96 => "datetime",
+        PhysicalType::FLOAT => "real",
+        PhysicalType::DOUBLE => "real",
+        PhysicalType::BYTE_ARRAY => "string",
+        PhysicalType::FIXED_LEN_BYTE_ARRAY => "decimal",
     }
 }
 
