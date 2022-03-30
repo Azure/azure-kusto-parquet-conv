@@ -1,8 +1,3 @@
-use chrono::Duration;
-use parquet::file::reader::{FileReader, SerializedFileReader};
-use parquet::record::{Field, List, Map, Row};
-use parquet::schema::types::Type as SchemaType;
-use serde_json::{Number, Value};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
@@ -11,10 +6,15 @@ use std::path::Path;
 
 use crate::settings::Settings;
 use crate::TimestampRendering;
+use chrono::Duration;
 use csv::Terminator;
 use num_bigint::{BigInt, Sign};
 use parquet::data_type::{AsBytes, Decimal};
+use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::reader::RowIter;
+use parquet::record::{Field, List, Map, Row};
+use parquet::schema::types::Type as SchemaType;
+use serde_json::{Number, Value};
 
 const WRITER_BUF_CAP: usize = 256 * 1024;
 
@@ -48,7 +48,9 @@ pub fn convert(
         .columns
         .as_ref()
         .map(|c| projected_schema(&reader, &c, &mut missing_columns).unwrap());
+
     let rows = reader.get_row_iter(schema)?;
+
     if settings.csv {
         top_level_rows_to_csv(&settings, rows, missing_columns, writer)
     } else {
@@ -68,8 +70,10 @@ fn projected_schema(
     }
 
     let mut projected_fields = Vec::new();
+
     for c in columns.iter() {
         let res = schema_fields.get_mut(c);
+
         match res {
             Some(ptr) => {
                 projected_fields.push(ptr.clone());
@@ -134,6 +138,7 @@ fn top_level_rows_to_csv(
             .terminator(Terminator::Any(b'\r'))
             .from_writer(vec![]);
         let columns = settings.columns.as_ref();
+
         match columns {
             Some(cols) => {
                 let mut row_columns_map: HashMap<&String, &Field> = HashMap::new();
@@ -161,6 +166,7 @@ fn top_level_rows_to_csv(
                 }
             }
         };
+
         csv_writer.write_record(None::<&[u8]>)?;
         writeln!(writer, "{}", String::from_utf8(csv_writer.into_inner()?)?)?;
     }
