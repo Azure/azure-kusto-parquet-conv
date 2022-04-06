@@ -2,14 +2,14 @@
 <package >
   <metadata>
     <id>pq2json</id>
-    <version>0.1.15</version>
+    <version>0.1.16</version>
     <authors>Evgeney Ryzhyk</authors>
     <owners>Evgeney Ryzhyk</owners>
     <license type="expression">MIT</license>
     <projectUrl>https://github.com/Azure/azure-kusto-parquet-conv</projectUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <description>Parquet to JSON (line delimited) converter tool.</description>
-    <releaseNotes>Updated cslschema handling of Int32, JSON and Decimal types.</releaseNotes>
+    <releaseNotes>Reverted cslschema changes for handling of Int32, JSON and Decimal types.</releaseNotes>
     <copyright>Copyright 2020</copyright>
     <tags></tags>
     <dependencies></dependencies>
