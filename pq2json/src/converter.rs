@@ -194,7 +194,7 @@ fn value_to_csv(value: &Value) -> String {
         Value::Number(ref v) => {
             if v.is_f64() {
                 let mut buffer = ryu::Buffer::new();
-                buffer.format(v.as_f64().unwrap()).to_owned()
+                truncate_trailing_zeros(buffer.format(v.as_f64().unwrap())).to_string()
             } else if v.is_u64() {
                 format!("{}", v.as_u64().unwrap())
             } else {
@@ -205,6 +205,10 @@ fn value_to_csv(value: &Value) -> String {
         Value::Array(ref v) => serde_json::to_string(&v).unwrap(),
         Value::Object(ref v) => serde_json::to_string(&v).unwrap(),
     }
+}
+
+fn truncate_trailing_zeros(str: &str) -> &str {
+    str.trim_end_matches('0').trim_end_matches('.')
 }
 
 fn row_to_value(settings: &Settings, row: &Row) -> Result<Value, Box<dyn Error>> {
