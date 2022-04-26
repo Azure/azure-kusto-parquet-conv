@@ -82,18 +82,18 @@ fn field_csl_schema(field_type: &Type) -> (&str, &str) {
                 PhysicalType::BOOLEAN => "bool",
                 PhysicalType::BYTE_ARRAY => match basic_info.logical_type() {
                     LogicalType::UTF8 | LogicalType::ENUM | LogicalType::JSON => "string",
-                    LogicalType::DECIMAL => "real",
+                    LogicalType::DECIMAL => "decimal",
                     _ => "dynamic",
                 },
                 PhysicalType::FIXED_LEN_BYTE_ARRAY => match basic_info.logical_type() {
-                    LogicalType::DECIMAL => "real",
+                    LogicalType::DECIMAL => "decimal",
                     _ => "dynamic",
                 },
                 PhysicalType::DOUBLE | PhysicalType::FLOAT => "real",
                 PhysicalType::INT32 => match basic_info.logical_type() {
                     LogicalType::DATE => "datetime",
                     LogicalType::DECIMAL => "real",
-                    _ => "long",
+                    _ => "int",
                 },
                 PhysicalType::INT64 => match basic_info.logical_type() {
                     LogicalType::TIMESTAMP_MILLIS | LogicalType::TIMESTAMP_MICROS => "datetime",
