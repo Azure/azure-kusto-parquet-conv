@@ -193,6 +193,10 @@ fn value_to_csv(value: &Value) -> String {
     }
 }
 
+fn truncate_trailing_zeros(str: &str) -> &str {
+    str.trim_end_matches('0').trim_end_matches('.')
+}
+
 fn row_to_value(settings: &Settings, row: &Row) -> Result<Value, Box<dyn Error>> {
     let mut map = serde_json::Map::with_capacity(row.len());
     for (name, field) in row.get_column_iter() {

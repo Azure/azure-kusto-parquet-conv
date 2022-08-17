@@ -2,7 +2,7 @@
 <package >
   <metadata>
     <id>pq2json</id>
-    <version>0.1.16</version>
+    <version>0.1.20</version>
     <authors>Evgeney Ryzhyk</authors>
     <owners>Evgeney Ryzhyk</owners>
     <license type="expression">MIT</license>

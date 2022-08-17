@@ -81,7 +81,7 @@ fn field_csl_schema(field_type: &Type) -> (&str, &str) {
             let csl_type = match physical_type {
                 PhysicalType::BOOLEAN => "bool",
                 PhysicalType::BYTE_ARRAY => match basic_info.converted_type() {
-                    ConvertedType::UTF8 | ConvertedType::ENUM => "string",
+                    ConvertedType::UTF8 | ConvertedType::ENUM | ConvertedType::JSON => "string",
                     ConvertedType::DECIMAL => "decimal",
                     _ => "dynamic",
                 },
