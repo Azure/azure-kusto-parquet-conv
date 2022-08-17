@@ -213,10 +213,6 @@ fn row_to_value(settings: &Settings, row: &Row) -> Result<Value, Box<dyn Error>>
     }
 }
 
-fn truncate_trailing_zeros(str: &str) -> &str {
-    str.trim_end_matches('0').trim_end_matches('.')
-}
-
 fn list_to_value(settings: &Settings, list: &List) -> Result<Value, Box<dyn Error>> {
     let mut arr = Vec::<Value>::with_capacity(list.len());
     for field in list.elements().iter() {
