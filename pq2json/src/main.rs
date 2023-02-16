@@ -139,9 +139,10 @@ fn main() {
         timestamp_rendering,
         omit_empty_lists: matches.is_present("omit-empty-lists") || matches.is_present("prune"),
         convert_types: matches.is_present("convert-types"),
-        columns: matches
-            .value_of("columns")
-            .map(|columns| columns.split(",").map(|s| s.to_string()).collect()),
+        columns: matches.value_of("columns").map(|columns| {
+            serde_json::from_str::<Vec<String>>(columns)
+                .expect("Expected a well-formed JSON array of column names, each surrounded by escaped double-quotes")
+        }),
         csv: matches.is_present("csv"),
     };
 
