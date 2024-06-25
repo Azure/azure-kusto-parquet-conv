@@ -3,7 +3,7 @@ use std::fs::File;
 use std::path::Path;
 
 use itertools::Itertools;
-use parquet::basic::{LogicalType, Type as PhysicalType};
+use parquet::basic::{ConvertedType, Type as PhysicalType};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::schema::printer::{print_file_metadata, print_parquet_metadata};
 use parquet::schema::types::Type;
@@ -80,24 +80,24 @@ fn field_csl_schema(field_type: &Type) -> (&str, &str) {
         } => {
             let csl_type = match physical_type {
                 PhysicalType::BOOLEAN => "bool",
-                PhysicalType::BYTE_ARRAY => match basic_info.logical_type() {
-                    LogicalType::UTF8 | LogicalType::ENUM | LogicalType::JSON => "string",
-                    LogicalType::DECIMAL => "decimal",
+                PhysicalType::BYTE_ARRAY => match basic_info.converted_type() {
+                    ConvertedType::UTF8 | ConvertedType::ENUM | ConvertedType::JSON => "string",
+                    ConvertedType::DECIMAL => "decimal",
                     _ => "dynamic",
                 },
-                PhysicalType::FIXED_LEN_BYTE_ARRAY => match basic_info.logical_type() {
-                    LogicalType::DECIMAL => "decimal",
+                PhysicalType::FIXED_LEN_BYTE_ARRAY => match basic_info.converted_type() {
+                    ConvertedType::DECIMAL => "decimal",
                     _ => "dynamic",
                 },
                 PhysicalType::DOUBLE | PhysicalType::FLOAT => "real",
-                PhysicalType::INT32 => match basic_info.logical_type() {
-                    LogicalType::DATE => "datetime",
-                    LogicalType::DECIMAL => "real",
+                PhysicalType::INT32 => match basic_info.converted_type() {
+                    ConvertedType::DATE => "datetime",
+                    ConvertedType::DECIMAL => "real",
                     _ => "int",
                 },
-                PhysicalType::INT64 => match basic_info.logical_type() {
-                    LogicalType::TIMESTAMP_MILLIS | LogicalType::TIMESTAMP_MICROS => "datetime",
-                    LogicalType::DECIMAL => "real",
+                PhysicalType::INT64 => match basic_info.converted_type() {
+                    ConvertedType::TIMESTAMP_MILLIS | ConvertedType::TIMESTAMP_MICROS => "datetime",
+                    ConvertedType::DECIMAL => "real",
                     _ => "long",
                 },
                 PhysicalType::INT96 => "datetime",

@@ -1,0 +1,163 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: integration
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+# trigger for all PRs that touch certain files and changes to master
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    paths:
+      - .github/**
+      - arrow-array/**
+      - arrow-buffer/**
+      - arrow-cast/**
+      - arrow-csv/**
+      - arrow-data/**
+      - arrow-integration-test/**
+      - arrow-integration-testing/**
+      - arrow-ipc/**
+      - arrow-json/**
+      - arrow-avro/**
+      - arrow-ord/**
+      - arrow-pyarrow-integration-testing/**
+      - arrow-schema/**
+      - arrow-select/**
+      - arrow-sort/**
+      - arrow-string/**
+      - arrow/**
+
+jobs:
+
+  integration:
+    name: Archery test With other arrows
+    runs-on: ubuntu-latest
+    container:
+      image: apache/arrow-dev:amd64-conda-integration
+    env:
+      ARROW_USE_CCACHE: OFF
+      ARROW_CPP_EXE_PATH: /build/cpp/debug
+      ARROW_NANOARROW_PATH: /build/nanoarrow
+      ARROW_RUST_EXE_PATH: /build/rust/debug
+      BUILD_DOCS_CPP: OFF
+      ARROW_INTEGRATION_CPP: ON
+      ARROW_INTEGRATION_CSHARP: ON
+      ARROW_INTEGRATION_GO: ON
+      ARROW_INTEGRATION_JAVA: ON
+      ARROW_INTEGRATION_JS: ON
+      ARCHERY_INTEGRATION_WITH_NANOARROW: "1"
+      # https://github.com/apache/arrow/pull/38403/files#r1371281630
+      ARCHERY_INTEGRATION_WITH_RUST: "1"
+      # These are necessary because the github runner overrides $HOME
+      # https://github.com/actions/runner/issues/863
+      RUSTUP_HOME: /root/.rustup
+      CARGO_HOME: /root/.cargo
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # This is necessary so that actions/checkout can find git
+      - name: Export conda path
+        run: echo "/opt/conda/envs/arrow/bin" >> $GITHUB_PATH
+      # This is necessary so that Rust can find cargo
+      - name: Export cargo path
+        run: echo "/root/.cargo/bin" >> $GITHUB_PATH
+      - name: Check rustup
+        run: which rustup
+      - name: Check cmake
+        run: which cmake
+      - name: Checkout Arrow
+        uses: actions/checkout@v4
+        with:
+          repository: apache/arrow
+          submodules: true
+          fetch-depth: 0
+      - name: Checkout Arrow Rust
+        uses: actions/checkout@v4
+        with:
+          path: rust
+          fetch-depth: 0
+      - name: Checkout Arrow nanoarrow
+        uses: actions/checkout@v4
+        with:
+          repository: apache/arrow-nanoarrow
+          path: nanoarrow
+          fetch-depth: 0
+      # Workaround https://github.com/rust-lang/rust/issues/125067
+      - name: Downgrade rust
+        working-directory: rust
+        run: rustup override set 1.77
+      - name: Build
+        run: conda run --no-capture-output ci/scripts/integration_arrow_build.sh $PWD /build
+      - name: Run
+        run: conda run --no-capture-output ci/scripts/integration_arrow.sh $PWD /build
+
+  # test FFI against the C-Data interface exposed by pyarrow
+  pyarrow-integration-test:
+    name: Pyarrow C Data Interface
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: [ stable ]
+        # PyArrow 13 was the last version prior to introduction to Arrow PyCapsules
+        pyarrow: [ "13", "14" ]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install ${{ matrix.rust }}
+          rustup default ${{ matrix.rust }}
+          rustup component add rustfmt clippy
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cargo
+          key: cargo-maturin-cache-
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/target
+          # this key is not equal because maturin uses different compilation flags.
+          key: ${{ runner.os }}-${{ matrix.arch }}-target-maturin-cache-${{ matrix.rust }}-
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+      - name: Upgrade pip and setuptools
+        run: pip install --upgrade pip setuptools wheel virtualenv
+      - name: Create virtualenv and install dependencies
+        run: |
+          virtualenv venv
+          source venv/bin/activate
+          pip install maturin toml pytest pytz pyarrow==${{ matrix.pyarrow }}
+      - name: Run Rust tests
+        run: |
+          source venv/bin/activate
+          cargo test -p arrow --test pyarrow --features pyarrow
+      - name: Run tests
+        run: |
+          source venv/bin/activate
+          cd arrow-pyarrow-integration-testing
+          maturin develop
+          pytest -v .

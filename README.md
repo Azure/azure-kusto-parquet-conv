@@ -1,5 +1,11 @@
 Parquet to JSON (line delimited) converter tool.
 
+# Dependencies
+
+The project is based on [arrow-rs](https://github.com/apache/arrow-rs) library.
+The clone of this repository presents in this repository under `arrow-rs` directory.
+The file `KUSTO.patch` contains all custom patches applied on the original `arrow-rs` code.
+
 # Building
 
 `cargo build --release`
