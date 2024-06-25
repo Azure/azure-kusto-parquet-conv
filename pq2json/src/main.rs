@@ -164,3 +164,25 @@ fn main() {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        converter,
+        settings::{Settings, TimestampRendering},
+    };
+
+    #[test]
+    pub fn test_main() {
+        let settings = Settings {
+            omit_nulls: true,
+            omit_empty_bags: true,
+            timestamp_rendering: TimestampRendering::IsoStr,
+            omit_empty_lists: true,
+            convert_types: true,
+            columns: None,
+            csv: true,
+        };
+        converter::convert(&settings, "C:/tmp/test_parquet/part-00000-0eb4defa-a0b3-4f0a-b9e1-13c0e7f10551-c000.snappy.parquet", None).expect("Convert");
+    }
+}

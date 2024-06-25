@@ -2,19 +2,19 @@
 <package >
   <metadata>
     <id>pq2json</id>
-    <version>0.1.21</version>
+    <version>0.1.22</version>
     <authors>Evgeney Ryzhyk</authors>
     <owners>Evgeney Ryzhyk</owners>
     <license type="expression">MIT</license>
     <projectUrl>https://github.com/Azure/azure-kusto-parquet-conv</projectUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <description>Parquet to JSON (line delimited) converter tool.</description>
-    <releaseNotes>Accept --columns as a JSON array.</releaseNotes>
+    <releaseNotes>Support timestamps up to microsecond precision.</releaseNotes>
     <copyright>Copyright 2020</copyright>
     <tags></tags>
     <dependencies></dependencies>
   </metadata>
   <files>
-      <file src="target\release\pq2json.exe" target="tools\x64" />
+      <file src="pq2json\target\release\pq2json.exe" target="tools\x64" />
   </files>
 </package>

@@ -86,7 +86,7 @@ fn projected_schema(
 
     Ok(
         SchemaType::group_type_builder(&file_meta.schema().get_basic_info().name())
-            .with_fields(&mut projected_fields)
+            .with_fields(projected_fields)
             .build()
             .unwrap(),
     )
@@ -112,12 +112,11 @@ macro_rules! element_to_value {
             FieldType::Bytes => bytes_to_value($obj.get_bytes($i)?.data()),
             FieldType::Date => date_to_value($obj.get_date($i)?)?,
             FieldType::TimestampMillis => {
-                timestamp_to_value($settings, $obj.get_timestamp_millis($i)?)?
+                timestamp_to_value($settings, $obj.get_timestamp_millis($i)? * 1_000)?
             }
-            FieldType::TimestampMicros => timestamp_to_value(
-                $settings,
-                $obj.get_timestamp_micros($i).map(|ts| ts / 1000)?,
-            )?,
+            FieldType::TimestampMicros => {
+                timestamp_to_value($settings, $obj.get_timestamp_micros($i)?)?
+            }
             FieldType::Group => row_to_value($settings, $obj.get_group($i)?)?,
             FieldType::List => list_to_value($settings, $obj.get_list($i)?)?,
             FieldType::Map => map_to_value($settings, $obj.get_map($i)?)?,
@@ -131,6 +130,7 @@ fn top_level_rows_to_json(
     mut writer: Box<dyn Write>,
 ) -> Result<(), Box<dyn Error>> {
     while let Some(row) = rows.next() {
+        let row = row?;
         let value = row_to_value(settings, &row)?;
         let value = if value.is_null() {
             Value::Object(serde_json::Map::default())
@@ -146,12 +146,14 @@ fn top_level_rows_to_csv(
     settings: &Settings,
     mut rows: RowIter,
     missing_columns: std::collections::HashSet<std::string::String>,
-    mut writer: Box<dyn Write>,
+    writer: Box<dyn Write>,
 ) -> Result<(), Box<dyn Error>> {
+    let mut csv_writer = csv::WriterBuilder::new()
+        .terminator(Terminator::Any(b'\r'))
+        .from_writer(writer);
+
     while let Some(row) = rows.next() {
-        let mut csv_writer = csv::WriterBuilder::new()
-            .terminator(Terminator::Any(b'\r'))
-            .from_writer(vec![]);
+        let row = row?;
         let mut column_idx = 0;
         let columns = settings.columns.as_ref();
 
@@ -180,10 +182,10 @@ fn top_level_rows_to_csv(
                 }
             }
         };
-
         csv_writer.write_record(None::<&[u8]>)?;
-        writeln!(writer, "{}", String::from_utf8(csv_writer.into_inner()?)?)?;
     }
+
+    csv_writer.flush()?;
     Ok(())
 }
 
@@ -302,13 +304,12 @@ fn ulong_to_value(l: u64, settings: &Settings) -> Value {
     }
 }
 
-const TICKS_TILL_UNIX_TIME: u64 = 621355968000000000u64;
-
-fn timestamp_to_value(settings: &Settings, ts: u64) -> Result<Value, Box<dyn Error>> {
+fn timestamp_to_value(settings: &Settings, ts_micros: i64) -> Result<Value, Box<dyn Error>> {
+    const TICKS_TILL_UNIX_TIME: i64 = 621355968000000000i64;
     match settings.timestamp_rendering {
         TimestampRendering::Ticks => {
-            let ticks = ts
-                .checked_mul(10000)
+            let ticks = ts_micros
+                .checked_mul(100)
                 .and_then(|t| t.checked_add(TICKS_TILL_UNIX_TIME));
             let v = ticks
                 .map(|t| Value::Number(t.into()))
@@ -316,23 +317,21 @@ fn timestamp_to_value(settings: &Settings, ts: u64) -> Result<Value, Box<dyn Err
             Ok(v)
         }
         TimestampRendering::IsoStr => {
-            let seconds = (ts / 1000) as i64;
-            let nanos = ((ts % 1000) * 1000000) as u32;
-            let datetime =
-                if let Some(dt) = chrono::NaiveDateTime::from_timestamp_opt(seconds, nanos) {
-                    dt
-                } else {
-                    return Ok(Value::Null);
-                };
+            let datetime = if let Some(dt) = chrono::DateTime::from_timestamp_micros(ts_micros) {
+                dt
+            } else {
+                return Ok(Value::Null);
+            };
             let iso_str = datetime.format("%Y-%m-%dT%H:%M:%S.%6fZ").to_string();
             Ok(Value::String(iso_str))
         }
-        TimestampRendering::UnixMs => Ok(Value::Number(ts.into())),
+        TimestampRendering::UnixMs => Ok(Value::Number((ts_micros / 1_000).into())),
     }
 }
 
-fn date_to_value(days_from_epoch: u32) -> Result<Value, Box<dyn Error>> {
-    let date = match chrono::NaiveDate::from_ymd(1970, 1, 1)
+fn date_to_value(days_from_epoch: i32) -> Result<Value, Box<dyn Error>> {
+    let date = match chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
+        .unwrap()
         .checked_add_signed(Duration::days(days_from_epoch as i64))
     {
         Some(date) => date,
