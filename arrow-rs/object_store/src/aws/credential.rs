@@ -852,8 +852,8 @@ mod tests {
         let client = Client::new();
 
         let credential = AwsCredential {
-            key_id: "H20ABqCkLZID4rLe".to_string(),
-            secret_key: "jMqRDgxSsBqqznfmddGdu1TmmZOJQxdM".to_string(),
+            key_id: "".to_string(),
+            secret_key: "".to_string(),
             token: None,
         };
 
@@ -882,7 +882,7 @@ mod tests {
         };
 
         authorizer.authorize(&mut request, None);
-        assert_eq!(request.headers().get(&AUTHORIZATION).unwrap(), "AWS4-HMAC-SHA256 Credential=H20ABqCkLZID4rLe/20220809/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=9ebf2f92872066c99ac94e573b4e1b80f4dbb8a32b1e8e23178318746e7d1b4d")
+        assert_eq!(request.headers().get(&AUTHORIZATION).unwrap(), "AWS4-HMAC-SHA256 Credential=/20220809/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=9ebf2f92872066c99ac94e573b4e1b80f4dbb8a32b1e8e23178318746e7d1b4d")
     }
 
     #[tokio::test]

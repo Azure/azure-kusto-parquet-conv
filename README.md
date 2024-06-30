@@ -6,6 +6,9 @@ The project is based on [arrow-rs](https://github.com/apache/arrow-rs) library.
 The clone of this repository presents in this repository under `arrow-rs` directory.
 The file `KUSTO.patch` contains all custom patches applied on the original `arrow-rs` code.
 
+(In addition, some fake AWS secrets must be removed from `arrow-rs/object_store/src/aws/credential.rs` test code,
+ to avoid false positive alerts from security scanner).
+
 # Building
 
 `cargo build --release`
