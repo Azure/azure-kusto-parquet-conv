@@ -18,6 +18,7 @@
 //! This library demonstrates a minimal usage of Rust's C data interface to pass
 //! arrays from and to Python.
 
+#![warn(missing_docs)]
 use std::sync::Arc;
 
 use arrow::array::new_empty_array;
@@ -26,7 +27,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 
-use arrow::array::{make_array, Array, ArrayData, ArrayRef, Int64Array};
+use arrow::array::{Array, ArrayData, ArrayRef, Int64Array, make_array};
 use arrow::compute::kernels;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::error::ArrowError;
@@ -40,9 +41,10 @@ fn to_py_err(err: ArrowError) -> PyErr {
 
 /// Returns `array + array` of an int64 array.
 #[pyfunction]
-fn double(array: &Bound<PyAny>, py: Python) -> PyResult<PyObject> {
+fn double<'py>(array: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    let py = array.py();
     // import
-    let array = make_array(ArrayData::from_pyarrow_bound(&array)?);
+    let array = make_array(ArrayData::from_pyarrow_bound(array)?);
 
     // perform some operation
     let array = array
@@ -60,13 +62,13 @@ fn double(array: &Bound<PyAny>, py: Python) -> PyResult<PyObject> {
 /// calls a lambda function that receives and returns an array
 /// whose result must be the array multiplied by two
 #[pyfunction]
-fn double_py(lambda: &Bound<PyAny>, py: Python) -> PyResult<bool> {
+fn double_py(lambda: &Bound<PyAny>) -> PyResult<bool> {
     // create
     let array = Arc::new(Int64Array::from(vec![Some(1), None, Some(3)]));
     let expected = Arc::new(Int64Array::from(vec![Some(2), None, Some(6)])) as ArrayRef;
 
     // to py
-    let pyarray = array.to_data().to_pyarrow(py)?;
+    let pyarray = array.to_data().to_pyarrow(lambda.py())?;
     let pyarray = lambda.call1((pyarray,))?;
     let array = make_array(ArrayData::from_pyarrow_bound(&pyarray)?);
 
@@ -74,7 +76,10 @@ fn double_py(lambda: &Bound<PyAny>, py: Python) -> PyResult<bool> {
 }
 
 #[pyfunction]
-fn make_empty_array(datatype: PyArrowType<DataType>, py: Python) -> PyResult<PyObject> {
+fn make_empty_array<'py>(
+    datatype: PyArrowType<DataType>,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
     let array = new_empty_array(&datatype.0);
 
     array.to_data().to_pyarrow(py)
@@ -94,7 +99,7 @@ fn substring(array: PyArrowType<ArrayData>, start: i64) -> PyResult<PyArrowType<
 
 /// Returns the concatenate
 #[pyfunction]
-fn concatenate(array: PyArrowType<ArrayData>, py: Python) -> PyResult<PyObject> {
+fn concatenate<'py>(array: PyArrowType<ArrayData>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
     let array = make_array(array.0);
 
     // concat

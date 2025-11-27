@@ -16,17 +16,23 @@
 // under the License.
 
 use arrow::array::{
-    make_array, Array, ArrayRef, BooleanArray, Decimal128Array, FixedSizeBinaryArray,
-    FixedSizeBinaryBuilder, FixedSizeListBuilder, GenericBinaryArray, GenericStringArray,
-    Int32Array, Int32Builder, Int64Builder, ListArray, ListBuilder, NullArray, OffsetSizeTrait,
-    StringArray, StringDictionaryBuilder, StructArray, UnionBuilder,
+    Array, ArrayRef, BooleanArray, Decimal128Array, FixedSizeBinaryArray, FixedSizeBinaryBuilder,
+    FixedSizeListBuilder, GenericBinaryArray, GenericStringArray, Int32Array, Int32Builder,
+    Int64Builder, ListArray, ListBuilder, NullArray, OffsetSizeTrait, StringArray,
+    StringDictionaryBuilder, StructArray, UnionBuilder, make_array,
 };
 use arrow::datatypes::{Int16Type, Int32Type};
-use arrow_array::builder::{StringBuilder, StringViewBuilder, StructBuilder};
-use arrow_array::{DictionaryArray, FixedSizeListArray, StringViewArray};
+use arrow_array::builder::{
+    GenericListViewBuilder, StringBuilder, StringViewBuilder, StructBuilder,
+};
+use arrow_array::cast::AsArray;
+use arrow_array::{
+    DictionaryArray, FixedSizeListArray, GenericListViewArray, PrimitiveArray, StringViewArray,
+};
 use arrow_buffer::{Buffer, ToByteSlice};
 use arrow_data::{ArrayData, ArrayDataBuilder};
 use arrow_schema::{DataType, Field, Fields};
+use arrow_select::take::take;
 use std::sync::Arc;
 
 #[test]
@@ -409,8 +415,7 @@ fn test_empty_offsets_list_equal() {
     let values = Int32Array::from(empty);
     let empty_offsets: [u8; 0] = [];
 
-    let a: ListArray = ArrayDataBuilder::new(DataType::List(Arc::new(Field::new(
-        "item",
+    let a: ListArray = ArrayDataBuilder::new(DataType::List(Arc::new(Field::new_list_field(
         DataType::Int32,
         true,
     ))))
@@ -422,8 +427,7 @@ fn test_empty_offsets_list_equal() {
     .unwrap()
     .into();
 
-    let b: ListArray = ArrayDataBuilder::new(DataType::List(Arc::new(Field::new(
-        "item",
+    let b: ListArray = ArrayDataBuilder::new(DataType::List(Arc::new(Field::new_list_field(
         DataType::Int32,
         true,
     ))))
@@ -437,15 +441,14 @@ fn test_empty_offsets_list_equal() {
 
     test_equal(&a, &b, true);
 
-    let c: ListArray = ArrayDataBuilder::new(DataType::List(Arc::new(Field::new(
-        "item",
+    let c: ListArray = ArrayDataBuilder::new(DataType::List(Arc::new(Field::new_list_field(
         DataType::Int32,
         true,
     ))))
     .len(0)
     .add_buffer(Buffer::from([0i32, 2, 3, 4, 6, 7, 8].to_byte_slice()))
     .add_child_data(Int32Array::from(vec![1, 2, -1, -2, 3, 4, -3, -4]).into_data())
-    .null_bit_buffer(Some(Buffer::from(vec![0b00001001])))
+    .null_bit_buffer(Some(Buffer::from([0b00001001])))
     .build()
     .unwrap()
     .into();
@@ -475,15 +478,14 @@ fn test_list_null() {
 
     // a list where the nullness of values is determined by the list's bitmap
     let c_values = Int32Array::from(vec![1, 2, -1, -2, 3, 4, -3, -4]);
-    let c: ListArray = ArrayDataBuilder::new(DataType::List(Arc::new(Field::new(
-        "item",
+    let c: ListArray = ArrayDataBuilder::new(DataType::List(Arc::new(Field::new_list_field(
         DataType::Int32,
         true,
     ))))
     .len(6)
     .add_buffer(Buffer::from([0i32, 2, 3, 4, 6, 7, 8].to_byte_slice()))
     .add_child_data(c_values.into_data())
-    .null_bit_buffer(Some(Buffer::from(vec![0b00001001])))
+    .null_bit_buffer(Some(Buffer::from([0b00001001])))
     .build()
     .unwrap()
     .into();
@@ -498,15 +500,14 @@ fn test_list_null() {
         None,
         None,
     ]);
-    let d: ListArray = ArrayDataBuilder::new(DataType::List(Arc::new(Field::new(
-        "item",
+    let d: ListArray = ArrayDataBuilder::new(DataType::List(Arc::new(Field::new_list_field(
         DataType::Int32,
         true,
     ))))
     .len(6)
     .add_buffer(Buffer::from([0i32, 2, 3, 4, 6, 7, 8].to_byte_slice()))
     .add_child_data(d_values.into_data())
-    .null_bit_buffer(Some(Buffer::from(vec![0b00001001])))
+    .null_bit_buffer(Some(Buffer::from([0b00001001])))
     .build()
     .unwrap()
     .into();
@@ -761,6 +762,125 @@ fn test_fixed_list_offsets() {
     test_equal(&a_slice, &b_slice, true);
 }
 
+fn create_list_view_array<
+    O: OffsetSizeTrait,
+    U: IntoIterator<Item = Option<i32>>,
+    T: IntoIterator<Item = Option<U>>,
+>(
+    data: T,
+) -> GenericListViewArray<O> {
+    let mut builder = GenericListViewBuilder::<O, _>::new(Int32Builder::new());
+    for d in data {
+        if let Some(v) = d {
+            builder.append_value(v);
+        } else {
+            builder.append_null();
+        }
+    }
+
+    builder.finish()
+}
+
+fn test_test_list_view_array<T: OffsetSizeTrait>() {
+    let a = create_list_view_array::<T, _, _>([
+        None,
+        Some(vec![Some(1), None, Some(2)]),
+        Some(vec![Some(3), Some(4), Some(5), None]),
+    ]);
+    let b = create_list_view_array::<T, _, _>([
+        None,
+        Some(vec![Some(1), None, Some(2)]),
+        Some(vec![Some(3), Some(4), Some(5), None]),
+    ]);
+
+    test_equal(&a, &b, true);
+
+    // Simple non-matching arrays by reordering
+    let b = create_list_view_array::<T, _, _>([
+        Some(vec![Some(3), Some(4), Some(5), None]),
+        Some(vec![Some(1), None, Some(2)]),
+    ]);
+    test_equal(&a, &b, false);
+
+    // reorder using take yields equal values
+    let indices: PrimitiveArray<Int32Type> = vec![None, Some(1), Some(0)].into();
+    let b = take(&b, &indices, None)
+        .unwrap()
+        .as_list_view::<T>()
+        .clone();
+
+    test_equal(&a, &b, true);
+
+    // Slicing one side yields unequal again
+    let a = a.slice(1, 2);
+
+    test_equal(&a, &b, false);
+
+    // Slicing the other to match makes them equal again
+    let b = b.slice(1, 2);
+
+    test_equal(&a, &b, true);
+}
+
+// Special test for List<ListView<i32>>.
+// This tests the equal_ranges kernel
+fn test_sliced_list_of_list_view<T: OffsetSizeTrait>() {
+    // First list view is created using the builder, with elements not deduplicated.
+    let mut a = ListBuilder::new(GenericListViewBuilder::<T, _>::new(Int32Builder::new()));
+
+    a.append_value([Some(vec![Some(1), Some(2), Some(3)]), Some(vec![])]);
+    a.append_null();
+    a.append_value([
+        Some(vec![Some(1), Some(2), Some(3)]),
+        None,
+        Some(vec![Some(6)]),
+    ]);
+
+    let a = a.finish();
+    // a = [[[1,2,3], []], null, [[4, null], [5], null, [6]]]
+
+    // First list view is created using the builder, with elements not deduplicated.
+    let mut b = ListBuilder::new(GenericListViewBuilder::<T, _>::new(Int32Builder::new()));
+
+    // Add an extra row that we will slice off, adjust the List offsets
+    b.append_value([Some(vec![Some(0), Some(0), Some(0)])]);
+    b.append_value([Some(vec![Some(1), Some(2), Some(3)]), Some(vec![])]);
+    b.append_null();
+    b.append_value([
+        Some(vec![Some(1), Some(2), Some(3)]),
+        None,
+        Some(vec![Some(6)]),
+    ]);
+
+    let b = b.finish();
+    // b = [[[0, 0, 0]], [[1,2,3], []], null, [[4, null], [5], null, [6]]]
+    let b = b.slice(1, 3);
+    // b = [[[1,2,3], []], null, [[4, null], [5], null, [6]]] but the outer ListArray
+    // has an offset
+
+    test_equal(&a, &b, true);
+}
+
+#[test]
+fn test_list_view_array() {
+    test_test_list_view_array::<i32>();
+}
+
+#[test]
+fn test_large_list_view_array() {
+    test_test_list_view_array::<i64>();
+}
+
+#[test]
+fn test_nested_list_view_array() {
+    test_sliced_list_of_list_view::<i32>();
+}
+
+#[test]
+fn test_nested_large_list_view_array() {
+    test_sliced_list_of_list_view::<i64>();
+}
+
 #[test]
 fn test_struct_equal() {
     let strings: ArrayRef = Arc::new(StringArray::from(vec![
@@ -807,7 +927,7 @@ fn test_struct_equal_null() {
         Field::new("f1", DataType::Utf8, true),
         Field::new("f2", DataType::Int32, true),
     ])))
-    .null_bit_buffer(Some(Buffer::from(vec![0b00001011])))
+    .null_bit_buffer(Some(Buffer::from([0b00001011])))
     .len(5)
     .add_child_data(strings.to_data())
     .add_child_data(ints.to_data())
@@ -819,7 +939,7 @@ fn test_struct_equal_null() {
         Field::new("f1", DataType::Utf8, true),
         Field::new("f2", DataType::Int32, true),
     ])))
-    .null_bit_buffer(Some(Buffer::from(vec![0b00001011])))
+    .null_bit_buffer(Some(Buffer::from([0b00001011])))
     .len(5)
     .add_child_data(strings.to_data())
     .add_child_data(ints_non_null.to_data())
@@ -835,7 +955,7 @@ fn test_struct_equal_null() {
         Field::new("f1", DataType::Utf8, true),
         Field::new("f2", DataType::Int32, true),
     ])))
-    .null_bit_buffer(Some(Buffer::from(vec![0b00001011])))
+    .null_bit_buffer(Some(Buffer::from([0b00001011])))
     .len(5)
     .add_child_data(strings.to_data())
     .add_child_data(c_ints_non_null.to_data())
@@ -849,7 +969,7 @@ fn test_struct_equal_null() {
     let a = ArrayData::builder(DataType::Struct(
         vec![Field::new("f3", a.data_type().clone(), true)].into(),
     ))
-    .null_bit_buffer(Some(Buffer::from(vec![0b00011110])))
+    .null_bit_buffer(Some(Buffer::from([0b00011110])))
     .len(5)
     .add_child_data(a.to_data())
     .build()
@@ -868,7 +988,7 @@ fn test_struct_equal_null() {
         Field::new("f1", DataType::Utf8, true),
         Field::new("f2", DataType::Int32, true),
     ])))
-    .null_bit_buffer(Some(Buffer::from(vec![0b00001011])))
+    .null_bit_buffer(Some(Buffer::from([0b00001011])))
     .len(5)
     .add_child_data(strings.to_data())
     .add_child_data(ints_non_null.to_data())
@@ -878,7 +998,7 @@ fn test_struct_equal_null() {
     let b = ArrayData::builder(DataType::Struct(
         vec![Field::new("f3", b.data_type().clone(), true)].into(),
     ))
-    .null_bit_buffer(Some(Buffer::from(vec![0b00011110])))
+    .null_bit_buffer(Some(Buffer::from([0b00011110])))
     .len(5)
     .add_child_data(b)
     .build()
@@ -909,7 +1029,7 @@ fn test_struct_equal_null_variable_size() {
     let a = ArrayData::builder(DataType::Struct(
         vec![Field::new("f1", DataType::Utf8, true)].into(),
     ))
-    .null_bit_buffer(Some(Buffer::from(vec![0b00001010])))
+    .null_bit_buffer(Some(Buffer::from([0b00001010])))
     .len(5)
     .add_child_data(strings1.to_data())
     .build()
@@ -919,7 +1039,7 @@ fn test_struct_equal_null_variable_size() {
     let b = ArrayData::builder(DataType::Struct(
         vec![Field::new("f1", DataType::Utf8, true)].into(),
     ))
-    .null_bit_buffer(Some(Buffer::from(vec![0b00001010])))
+    .null_bit_buffer(Some(Buffer::from([0b00001010])))
     .len(5)
     .add_child_data(strings2.to_data())
     .build()
@@ -939,7 +1059,7 @@ fn test_struct_equal_null_variable_size() {
     let c = ArrayData::builder(DataType::Struct(
         vec![Field::new("f1", DataType::Utf8, true)].into(),
     ))
-    .null_bit_buffer(Some(Buffer::from(vec![0b00001011])))
+    .null_bit_buffer(Some(Buffer::from([0b00001011])))
     .len(5)
     .add_child_data(strings3.to_data())
     .build()

@@ -21,8 +21,8 @@ use arrow::array::{Int32Array, StringArray};
 use arrow::record_batch::RecordBatch;
 use arrow_array::builder::{Int32Builder, ListBuilder};
 use bytes::Bytes;
-use parquet::arrow::arrow_reader::{ArrowReaderOptions, ParquetRecordBatchReaderBuilder};
 use parquet::arrow::ArrowWriter;
+use parquet::arrow::arrow_reader::{ArrowReaderOptions, ParquetRecordBatchReaderBuilder};
 use parquet::basic::{Encoding, PageType};
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::properties::{ReaderProperties, WriterProperties};
@@ -89,12 +89,15 @@ fn assert_layout(file_reader: &Bytes, meta: &ParquetMetaData, layout: &Layout) {
 
         for (column_index, column_layout) in offset_index.iter().zip(&row_group_layout.columns) {
             assert_eq!(
-                column_index.len(),
+                column_index.page_locations.len(),
                 column_layout.pages.len(),
                 "index page count mismatch"
             );
-            for (idx, (page, page_layout)) in
-                column_index.iter().zip(&column_layout.pages).enumerate()
+            for (idx, (page, page_layout)) in column_index
+                .page_locations
+                .iter()
+                .zip(&column_layout.pages)
+                .enumerate()
             {
                 assert_eq!(
                     page.compressed_page_size as usize,
@@ -102,6 +105,7 @@ fn assert_layout(file_reader: &Bytes, meta: &ParquetMetaData, layout: &Layout) {
                     "index page {idx} size mismatch"
                 );
                 let next_first_row_index = column_index
+                    .page_locations
                     .get(idx + 1)
                     .map(|x| x.first_row_index)
                     .unwrap_or_else(|| row_group.num_rows());
@@ -173,6 +177,7 @@ fn test_primitive() {
         .set_dictionary_enabled(false)
         .set_data_page_size_limit(1000)
         .set_write_batch_size(10)
+        .set_write_page_header_statistics(true)
         .build();
 
     // Test spill plain encoding pages
@@ -185,7 +190,7 @@ fn test_primitive() {
                     pages: (0..8)
                         .map(|_| Page {
                             rows: 250,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 1000,
                             encoding: Encoding::PLAIN,
                             page_type: PageType::DATA_PAGE,
@@ -203,6 +208,7 @@ fn test_primitive() {
         .set_dictionary_page_size_limit(1000)
         .set_data_page_size_limit(10000)
         .set_write_batch_size(10)
+        .set_write_page_header_statistics(true)
         .build();
 
     do_test(LayoutTest {
@@ -214,14 +220,14 @@ fn test_primitive() {
                     pages: vec![
                         Page {
                             rows: 250,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 258,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
                         },
                         Page {
                             rows: 1750,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 7000,
                             encoding: Encoding::PLAIN,
                             page_type: PageType::DATA_PAGE,
@@ -229,7 +235,7 @@ fn test_primitive() {
                     ],
                     dictionary_page: Some(Page {
                         rows: 250,
-                        page_header_size: 36,
+                        page_header_size: 38,
                         compressed_size: 1000,
                         encoding: Encoding::PLAIN,
                         page_type: PageType::DICTIONARY_PAGE,
@@ -245,6 +251,7 @@ fn test_primitive() {
         .set_dictionary_page_size_limit(10000)
         .set_data_page_size_limit(500)
         .set_write_batch_size(10)
+        .set_write_page_header_statistics(true)
         .build();
 
     do_test(LayoutTest {
@@ -256,42 +263,42 @@ fn test_primitive() {
                     pages: vec![
                         Page {
                             rows: 400,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 452,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
                         },
                         Page {
                             rows: 370,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 472,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
                         },
                         Page {
                             rows: 330,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 464,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
                         },
                         Page {
                             rows: 330,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 464,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
                         },
                         Page {
                             rows: 330,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 464,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
                         },
                         Page {
                             rows: 240,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 332,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
@@ -299,7 +306,7 @@ fn test_primitive() {
                     ],
                     dictionary_page: Some(Page {
                         rows: 2000,
-                        page_header_size: 36,
+                        page_header_size: 38,
                         compressed_size: 8000,
                         encoding: Encoding::PLAIN,
                         page_type: PageType::DICTIONARY_PAGE,
@@ -314,6 +321,7 @@ fn test_primitive() {
         .set_dictionary_enabled(false)
         .set_data_page_row_count_limit(100)
         .set_write_batch_size(100)
+        .set_write_page_header_statistics(true)
         .build();
 
     do_test(LayoutTest {
@@ -325,7 +333,7 @@ fn test_primitive() {
                     pages: (0..20)
                         .map(|_| Page {
                             rows: 100,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 400,
                             encoding: Encoding::PLAIN,
                             page_type: PageType::DATA_PAGE,
@@ -348,6 +356,7 @@ fn test_string() {
         .set_dictionary_enabled(false)
         .set_data_page_size_limit(1000)
         .set_write_batch_size(10)
+        .set_write_page_header_statistics(true)
         .build();
 
     // Test spill plain encoding pages
@@ -360,14 +369,14 @@ fn test_string() {
                     pages: (0..15)
                         .map(|_| Page {
                             rows: 130,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 1040,
                             encoding: Encoding::PLAIN,
                             page_type: PageType::DATA_PAGE,
                         })
                         .chain(std::iter::once(Page {
                             rows: 50,
-                            page_header_size: 35,
+                            page_header_size: 37,
                             compressed_size: 400,
                             encoding: Encoding::PLAIN,
                             page_type: PageType::DATA_PAGE,
@@ -385,6 +394,7 @@ fn test_string() {
         .set_dictionary_page_size_limit(1000)
         .set_data_page_size_limit(10000)
         .set_write_batch_size(10)
+        .set_write_page_header_statistics(true)
         .build();
 
     do_test(LayoutTest {
@@ -396,21 +406,21 @@ fn test_string() {
                     pages: vec![
                         Page {
                             rows: 130,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 138,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
                         },
                         Page {
                             rows: 1250,
-                            page_header_size: 38,
+                            page_header_size: 40,
                             compressed_size: 10000,
                             encoding: Encoding::PLAIN,
                             page_type: PageType::DATA_PAGE,
                         },
                         Page {
                             rows: 620,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 4960,
                             encoding: Encoding::PLAIN,
                             page_type: PageType::DATA_PAGE,
@@ -418,7 +428,7 @@ fn test_string() {
                     ],
                     dictionary_page: Some(Page {
                         rows: 130,
-                        page_header_size: 36,
+                        page_header_size: 38,
                         compressed_size: 1040,
                         encoding: Encoding::PLAIN,
                         page_type: PageType::DICTIONARY_PAGE,
@@ -434,6 +444,7 @@ fn test_string() {
         .set_dictionary_page_size_limit(20000)
         .set_data_page_size_limit(500)
         .set_write_batch_size(10)
+        .set_write_page_header_statistics(true)
         .build();
 
     do_test(LayoutTest {
@@ -445,42 +456,42 @@ fn test_string() {
                     pages: vec![
                         Page {
                             rows: 400,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 452,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
                         },
                         Page {
                             rows: 370,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 472,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
                         },
                         Page {
                             rows: 330,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 464,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
                         },
                         Page {
                             rows: 330,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 464,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
                         },
                         Page {
                             rows: 330,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 464,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
                         },
                         Page {
                             rows: 240,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 332,
                             encoding: Encoding::RLE_DICTIONARY,
                             page_type: PageType::DATA_PAGE,
@@ -488,7 +499,7 @@ fn test_string() {
                     ],
                     dictionary_page: Some(Page {
                         rows: 2000,
-                        page_header_size: 36,
+                        page_header_size: 38,
                         compressed_size: 16000,
                         encoding: Encoding::PLAIN,
                         page_type: PageType::DICTIONARY_PAGE,
@@ -516,6 +527,7 @@ fn test_list() {
         .set_dictionary_enabled(false)
         .set_data_page_row_count_limit(20)
         .set_write_batch_size(3)
+        .set_write_page_header_statistics(true)
         .build();
 
     // Test rows not split across pages
@@ -528,7 +540,7 @@ fn test_list() {
                     pages: (0..10)
                         .map(|_| Page {
                             rows: 20,
-                            page_header_size: 36,
+                            page_header_size: 38,
                             compressed_size: 672,
                             encoding: Encoding::PLAIN,
                             page_type: PageType::DATA_PAGE,

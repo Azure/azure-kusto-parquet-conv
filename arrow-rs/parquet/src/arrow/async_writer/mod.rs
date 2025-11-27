@@ -15,13 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Contains async writer which writes arrow data into parquet data.
+//! `async` API for writing [`RecordBatch`]es to Parquet files
 //!
-//! Provides `async` API for writing [`RecordBatch`]es as parquet files. The API is
-//! similar to the [`sync` API](crate::arrow::arrow_writer::ArrowWriter), so please
+//! See the [crate-level documentation](crate) for more details.
+//!
+//! The `async` API for writing [`RecordBatch`]es is
+//! similar to the [`sync` API](ArrowWriter), so please
 //! read the documentation there before using this API.
 //!
 //! Here is an example for using [`AsyncArrowWriter`]:
+//!
 //! ```
 //! # #[tokio::main(flavor="current_thread")]
 //! # async fn main() {
@@ -49,23 +52,32 @@
 //! assert_eq!(to_write, read);
 //! # }
 //! ```
+//!
+//! [`object_store`] provides it's native implementation of [`AsyncFileWriter`] by [`ParquetObjectWriter`].
+
+#[cfg(feature = "object_store")]
+mod store;
+#[cfg(feature = "object_store")]
+pub use store::*;
 
 use crate::{
-    arrow::arrow_writer::ArrowWriterOptions,
     arrow::ArrowWriter,
+    arrow::arrow_writer::ArrowWriterOptions,
     errors::{ParquetError, Result},
-    file::{metadata::RowGroupMetaDataPtr, properties::WriterProperties},
-    format::{FileMetaData, KeyValue},
+    file::{
+        metadata::{KeyValue, ParquetMetaData, RowGroupMetaData},
+        properties::WriterProperties,
+    },
 };
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
-use futures::future::BoxFuture;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use std::mem;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-/// The asynchronous interface used by [`AsyncArrowWriter`] to write parquet files
+/// The asynchronous interface used by [`AsyncArrowWriter`] to write parquet files.
 pub trait AsyncFileWriter: Send {
     /// Write the provided bytes to the underlying writer
     ///
@@ -81,7 +93,7 @@ pub trait AsyncFileWriter: Send {
     fn complete(&mut self) -> BoxFuture<'_, Result<()>>;
 }
 
-impl AsyncFileWriter for Box<dyn AsyncFileWriter> {
+impl AsyncFileWriter for Box<dyn AsyncFileWriter + '_> {
     fn write(&mut self, bs: Bytes) -> BoxFuture<'_, Result<()>> {
         self.as_mut().write(bs)
     }
@@ -172,11 +184,20 @@ impl<W: AsyncFileWriter> AsyncArrowWriter<W> {
     }
 
     /// Returns metadata for any flushed row groups
-    pub fn flushed_row_groups(&self) -> &[RowGroupMetaDataPtr] {
+    pub fn flushed_row_groups(&self) -> &[RowGroupMetaData] {
         self.sync_writer.flushed_row_groups()
     }
 
-    /// Returns the estimated length in bytes of the current in progress row group
+    /// Estimated memory usage, in bytes, of this `ArrowWriter`
+    ///
+    /// See [ArrowWriter::memory_size] for more information.
+    pub fn memory_size(&self) -> usize {
+        self.sync_writer.memory_size()
+    }
+
+    /// Anticipated encoded size of the in progress row group.
+    ///
+    /// See [ArrowWriter::memory_size] for more information.
     pub fn in_progress_size(&self) -> usize {
         self.sync_writer.in_progress_size()
     }
@@ -222,7 +243,11 @@ impl<W: AsyncFileWriter> AsyncArrowWriter<W> {
     /// Close and finalize the writer.
     ///
     /// All the data in the inner buffer will be force flushed.
-    pub async fn close(mut self) -> Result<FileMetaData> {
+    ///
+    /// Unlike [`Self::close`] this does not consume self
+    ///
+    /// Attempting to write after calling finish will result in an error
+    pub async fn finish(&mut self) -> Result<ParquetMetaData> {
         let metadata = self.sync_writer.finish()?;
 
         // Force to flush the remaining data.
@@ -230,6 +255,23 @@ impl<W: AsyncFileWriter> AsyncArrowWriter<W> {
         self.async_writer.complete().await?;
 
         Ok(metadata)
+    }
+
+    /// Close and finalize the writer.
+    ///
+    /// All the data in the inner buffer will be force flushed.
+    pub async fn close(mut self) -> Result<ParquetMetaData> {
+        self.finish().await
+    }
+
+    /// Consumes the [`AsyncArrowWriter`] and returns the underlying [`AsyncFileWriter`]
+    ///
+    /// # Notes
+    ///
+    /// This method does **not** flush or finalize the writer, so buffered data
+    /// will be lost if you have not called [`Self::finish`].
+    pub fn into_inner(self) -> W {
+        self.async_writer
     }
 
     /// Flush the data written by `sync_writer` into the `async_writer`
@@ -252,20 +294,18 @@ impl<W: AsyncFileWriter> AsyncArrowWriter<W> {
 
 #[cfg(test)]
 mod tests {
+    use crate::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow_array::{ArrayRef, BinaryArray, Int32Array, Int64Array, RecordBatchReader};
     use bytes::Bytes;
     use std::sync::Arc;
-    use tokio::pin;
-
-    use crate::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 
     use super::*;
 
     fn get_test_reader() -> ParquetRecordBatchReader {
         let testdata = arrow::util::test_util::parquet_test_data();
         // This test file is large enough to generate multiple row groups.
-        let path = format!("{}/alltypes_tiny_pages_plain.parquet", testdata);
+        let path = format!("{testdata}/alltypes_tiny_pages_plain.parquet");
         let original_data = Bytes::from(std::fs::read(path).unwrap());
         ParquetRecordBatchReaderBuilder::try_new(original_data)
             .unwrap()
@@ -325,47 +365,26 @@ mod tests {
         assert_eq!(sync_buffer, async_buffer);
     }
 
-    struct TestAsyncSink {
-        sink: Vec<u8>,
-        min_accept_bytes: usize,
-        expect_total_bytes: usize,
-    }
+    #[tokio::test]
+    async fn test_async_writer_bytes_written() {
+        let col = Arc::new(Int64Array::from_iter_values([1, 2, 3])) as ArrayRef;
+        let to_write = RecordBatch::try_from_iter([("col", col)]).unwrap();
 
-    impl AsyncWrite for TestAsyncSink {
-        fn poll_write(
-            self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-            buf: &[u8],
-        ) -> std::task::Poll<std::result::Result<usize, std::io::Error>> {
-            let written_bytes = self.sink.len();
-            if written_bytes + buf.len() < self.expect_total_bytes {
-                assert!(buf.len() >= self.min_accept_bytes);
-            } else {
-                assert_eq!(written_bytes + buf.len(), self.expect_total_bytes);
-            }
+        let temp = tempfile::tempfile().unwrap();
 
-            let sink = &mut self.get_mut().sink;
-            pin!(sink);
-            sink.poll_write(cx, buf)
-        }
+        let file = tokio::fs::File::from_std(temp.try_clone().unwrap());
+        let mut writer =
+            AsyncArrowWriter::try_new(file.try_clone().await.unwrap(), to_write.schema(), None)
+                .unwrap();
+        writer.write(&to_write).await.unwrap();
+        let _metadata = writer.finish().await.unwrap();
+        // After `finish` this should include the metadata and footer
+        let reported = writer.bytes_written();
 
-        fn poll_flush(
-            self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<std::result::Result<(), std::io::Error>> {
-            let sink = &mut self.get_mut().sink;
-            pin!(sink);
-            sink.poll_flush(cx)
-        }
+        // Get actual size from file metadata
+        let actual = file.metadata().await.unwrap().len() as usize;
 
-        fn poll_shutdown(
-            self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<std::result::Result<(), std::io::Error>> {
-            let sink = &mut self.get_mut().sink;
-            pin!(sink);
-            sink.poll_shutdown(cx)
-        }
+        assert_eq!(reported, actual);
     }
 
     #[tokio::test]
@@ -419,16 +438,30 @@ mod tests {
         let initial_size = writer.in_progress_size();
         assert!(initial_size > 0);
         assert_eq!(writer.in_progress_rows(), batch.num_rows());
+        let initial_memory = writer.memory_size();
+        // memory estimate is larger than estimated encoded size
+        assert!(
+            initial_size <= initial_memory,
+            "{initial_size} <= {initial_memory}"
+        );
 
         // updated on second write
         writer.write(&batch).await.unwrap();
         assert!(writer.in_progress_size() > initial_size);
         assert_eq!(writer.in_progress_rows(), batch.num_rows() * 2);
+        assert!(writer.memory_size() > initial_memory);
+        assert!(
+            writer.in_progress_size() <= writer.memory_size(),
+            "in_progress_size {} <= memory_size {}",
+            writer.in_progress_size(),
+            writer.memory_size()
+        );
 
         // in progress tracking is cleared, but the overall data written is updated
         let pre_flush_bytes_written = writer.bytes_written();
         writer.flush().await.unwrap();
         assert_eq!(writer.in_progress_size(), 0);
+        assert_eq!(writer.memory_size(), 0);
         assert_eq!(writer.in_progress_rows(), 0);
         assert!(writer.bytes_written() > pre_flush_bytes_written);
 

@@ -33,6 +33,7 @@
 mod catalogs;
 mod db_schemas;
 mod sql_info;
+mod table_types;
 mod tables;
 mod xdbc_info;
 
@@ -69,8 +70,7 @@ mod tests {
         let actual_lines: Vec<_> = formatted.trim().lines().collect();
         assert_eq!(
             &actual_lines, expected_lines,
-            "\n\nexpected:\n\n{:#?}\nactual:\n\n{:#?}\n\n",
-            expected_lines, actual_lines
+            "\n\nexpected:\n\n{expected_lines:#?}\nactual:\n\n{actual_lines:#?}\n\n",
         );
     }
 }

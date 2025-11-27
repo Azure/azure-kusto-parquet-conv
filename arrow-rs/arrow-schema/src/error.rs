@@ -26,23 +26,44 @@ use std::error::Error;
 pub enum ArrowError {
     /// Returned when functionality is not yet available.
     NotYetImplemented(String),
+    /// Wraps an external error.
     ExternalError(Box<dyn Error + Send + Sync>),
+    /// Error during casting from one type to another.
     CastError(String),
+    /// Memory or buffer error.
     MemoryError(String),
+    /// Error during parsing from a string.
     ParseError(String),
+    /// Error during schema-related operations.
     SchemaError(String),
+    /// Error during computation.
     ComputeError(String),
+    /// Error during division by zero.
     DivideByZero,
+    /// Error when an arithmetic operation overflows.
+    ArithmeticOverflow(String),
+    /// Error during CSV-related operations.
     CsvError(String),
+    /// Error during JSON-related operations.
     JsonError(String),
+    /// Error during Avro-related operations.
+    AvroError(String),
+    /// Error during IO operations.
     IoError(String, std::io::Error),
+    /// Error during IPC operations in `arrow-ipc` or `arrow-flight`.
     IpcError(String),
+    /// Error indicating that an unexpected or bad argument was passed to a function.
     InvalidArgumentError(String),
+    /// Error during Parquet operations.
     ParquetError(String),
     /// Error during import or export to/from the C Data Interface
     CDataInterface(String),
+    /// Error when a dictionary key is bigger than the key type
     DictionaryKeyOverflowError,
+    /// Error when the run end index in a REE array is bigger than the array length
     RunEndIndexOverflowError,
+    /// Error when the offset overflows.
+    OffsetOverflowError(usize),
 }
 
 impl ArrowError {
@@ -88,7 +109,9 @@ impl Display for ArrowError {
             ArrowError::ParseError(desc) => write!(f, "Parser error: {desc}"),
             ArrowError::SchemaError(desc) => write!(f, "Schema error: {desc}"),
             ArrowError::ComputeError(desc) => write!(f, "Compute error: {desc}"),
+            ArrowError::ArithmeticOverflow(desc) => write!(f, "Arithmetic overflow: {desc}"),
             ArrowError::DivideByZero => write!(f, "Divide by zero error"),
+            ArrowError::AvroError(desc) => write!(f, "Avro error: {desc}"),
             ArrowError::CsvError(desc) => write!(f, "Csv error: {desc}"),
             ArrowError::JsonError(desc) => write!(f, "Json error: {desc}"),
             ArrowError::IoError(desc, _) => write!(f, "Io error: {desc}"),
@@ -107,6 +130,9 @@ impl Display for ArrowError {
             }
             ArrowError::RunEndIndexOverflowError => {
                 write!(f, "Run end encoded array index overflow error")
+            }
+            ArrowError::OffsetOverflowError(offset) => {
+                write!(f, "Offset overflow error: {offset}")
             }
         }
     }

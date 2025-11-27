@@ -72,7 +72,7 @@
 
 use std::{
     fmt::Display,
-    fs::{read_to_string, File},
+    fs::{File, read_to_string},
     io::Read,
     path::{Path, PathBuf},
     sync::Arc,
@@ -83,7 +83,7 @@ use arrow_schema::{ArrowError, Schema};
 use clap::{Parser, ValueEnum};
 use parquet::arrow::arrow_writer::ArrowWriterOptions;
 use parquet::{
-    arrow::{parquet_to_arrow_schema, ArrowWriter},
+    arrow::{ArrowWriter, parquet_to_arrow_schema},
     basic::Compression,
     errors::ParquetError,
     file::properties::{WriterProperties, WriterVersion},
@@ -224,9 +224,9 @@ fn compression_from_str(cmp: &str) -> Result<Compression, String> {
         "BROTLI" => Ok(Compression::BROTLI(Default::default())),
         "LZ4" => Ok(Compression::LZ4),
         "ZSTD" => Ok(Compression::ZSTD(Default::default())),
-        v => Err(
-            format!("Unknown compression {v} : possible values UNCOMPRESSED, SNAPPY, GZIP, LZO, BROTLI, LZ4, ZSTD \n\nFor more information try --help")
-        )
+        v => Err(format!(
+            "Unknown compression {v} : possible values UNCOMPRESSED, SNAPPY, GZIP, LZO, BROTLI, LZ4, ZSTD \n\nFor more information try --help"
+        )),
     }
 }
 
@@ -557,9 +557,10 @@ mod tests {
     fn test_parse_arg_compression_format_fail() {
         match parse_args(vec!["--parquet-compression", "zip"]) {
             Ok(_) => panic!("unexpected success"),
-            Err(e) => assert_eq!(
-                format!("{e}"),
-                "error: invalid value 'zip' for '--parquet-compression <PARQUET_COMPRESSION>': Unknown compression ZIP : possible values UNCOMPRESSED, SNAPPY, GZIP, LZO, BROTLI, LZ4, ZSTD \n\nFor more information try --help\n"),
+            Err(e) => {
+                let err = e.to_string();
+                assert!(err.contains("error: invalid value 'zip' for '--parquet-compression <PARQUET_COMPRESSION>': Unknown compression ZIP : possible values UNCOMPRESSED, SNAPPY, GZIP, LZO, BROTLI, LZ4, ZSTD \n\nFor more information try --help"), "{err}")
+            }
         }
     }
 

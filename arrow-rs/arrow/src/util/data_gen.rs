@@ -19,7 +19,10 @@
 
 use std::sync::Arc;
 
-use rand::{distributions::uniform::SampleUniform, Rng};
+use rand::{
+    Rng,
+    distr::uniform::{SampleRange, SampleUniform},
+};
 
 use crate::array::*;
 use crate::error::{ArrowError, Result};
@@ -52,6 +55,14 @@ pub fn create_random_batch(
 
 /// Create a random [ArrayRef] from a [DataType] with a length,
 /// null density and true density (for [BooleanArray]).
+///
+/// # Arguments
+///
+/// * `field` - The field containing the data type for which to create a random array
+/// * `size` - The number of elements in the generated array
+/// * `null_density` - The approximate fraction of null values in the resulting array (0.0 to 1.0)
+/// * `true_density` - The approximate fraction of true values in boolean arrays (0.0 to 1.0)
+///
 pub fn create_random_array(
     field: &Field,
     size: usize,
@@ -107,7 +118,7 @@ pub fn create_random_array(
         Float16 => {
             return Err(ArrowError::NotYetImplemented(
                 "Float16 is not implemented".to_string(),
-            ))
+            ));
         }
         Float32 => Arc::new(create_primitive_array::<Float32Type>(
             size,
@@ -117,49 +128,67 @@ pub fn create_random_array(
             size,
             primitive_null_density,
         )),
-        Timestamp(_, _) => {
-            let int64_array = Arc::new(create_primitive_array::<Int64Type>(
-                size,
-                primitive_null_density,
-            )) as ArrayRef;
-            return crate::compute::cast(&int64_array, field.data_type());
-        }
-        Date32 => Arc::new(create_primitive_array::<Date32Type>(
+        Timestamp(unit, tz) => match unit {
+            TimeUnit::Second => Arc::new(
+                create_random_temporal_array::<TimestampSecondType>(size, primitive_null_density)
+                    .with_timezone_opt(tz.clone()),
+            ),
+            TimeUnit::Millisecond => Arc::new(
+                create_random_temporal_array::<TimestampMillisecondType>(
+                    size,
+                    primitive_null_density,
+                )
+                .with_timezone_opt(tz.clone()),
+            ),
+            TimeUnit::Microsecond => Arc::new(
+                create_random_temporal_array::<TimestampMicrosecondType>(
+                    size,
+                    primitive_null_density,
+                )
+                .with_timezone_opt(tz.clone()),
+            ),
+            TimeUnit::Nanosecond => Arc::new(
+                create_random_temporal_array::<TimestampNanosecondType>(
+                    size,
+                    primitive_null_density,
+                )
+                .with_timezone_opt(tz.clone()),
+            ),
+        },
+        Date32 => Arc::new(create_random_temporal_array::<Date32Type>(
             size,
             primitive_null_density,
         )),
-        Date64 => Arc::new(create_primitive_array::<Date64Type>(
+        Date64 => Arc::new(create_random_temporal_array::<Date64Type>(
             size,
             primitive_null_density,
         )),
         Time32(unit) => match unit {
-            TimeUnit::Second => Arc::new(create_primitive_array::<Time32SecondType>(
+            TimeUnit::Second => Arc::new(create_random_temporal_array::<Time32SecondType>(
                 size,
                 primitive_null_density,
             )) as ArrayRef,
-            TimeUnit::Millisecond => Arc::new(create_primitive_array::<Time32MillisecondType>(
-                size,
-                primitive_null_density,
-            )),
+            TimeUnit::Millisecond => Arc::new(
+                create_random_temporal_array::<Time32MillisecondType>(size, primitive_null_density),
+            ),
             _ => {
                 return Err(ArrowError::InvalidArgumentError(format!(
                     "Unsupported unit {unit:?} for Time32"
-                )))
+                )));
             }
         },
         Time64(unit) => match unit {
-            TimeUnit::Microsecond => Arc::new(create_primitive_array::<Time64MicrosecondType>(
-                size,
-                primitive_null_density,
-            )) as ArrayRef,
-            TimeUnit::Nanosecond => Arc::new(create_primitive_array::<Time64NanosecondType>(
+            TimeUnit::Microsecond => Arc::new(
+                create_random_temporal_array::<Time64MicrosecondType>(size, primitive_null_density),
+            ) as ArrayRef,
+            TimeUnit::Nanosecond => Arc::new(create_random_temporal_array::<Time64NanosecondType>(
                 size,
                 primitive_null_density,
             )),
             _ => {
                 return Err(ArrowError::InvalidArgumentError(format!(
                     "Unsupported unit {unit:?} for Time64"
-                )))
+                )));
             }
         },
         Utf8 => Arc::new(create_string_array::<i32>(size, primitive_null_density)),
@@ -194,12 +223,53 @@ pub fn create_random_array(
             crate::compute::cast(&v, d)?
         }
         Map(_, _) => create_random_map_array(field, size, null_density, true_density)?,
+        Decimal128(_, _) => create_random_decimal_array(field, size, null_density)?,
+        Decimal256(_, _) => create_random_decimal_array(field, size, null_density)?,
         other => {
             return Err(ArrowError::NotYetImplemented(format!(
                 "Generating random arrays not yet implemented for {other:?}"
-            )))
+            )));
         }
     })
+}
+
+#[inline]
+fn create_random_decimal_array(field: &Field, size: usize, null_density: f32) -> Result<ArrayRef> {
+    let mut rng = seedable_rng();
+
+    match field.data_type() {
+        DataType::Decimal128(precision, scale) => {
+            let values = (0..size)
+                .map(|_| {
+                    if rng.random::<f32>() < null_density {
+                        None
+                    } else {
+                        Some(rng.random::<i128>())
+                    }
+                })
+                .collect::<Vec<_>>();
+            Ok(Arc::new(
+                Decimal128Array::from(values).with_precision_and_scale(*precision, *scale)?,
+            ))
+        }
+        DataType::Decimal256(precision, scale) => {
+            let values = (0..size)
+                .map(|_| {
+                    if rng.random::<f32>() < null_density {
+                        None
+                    } else {
+                        Some(i256::from_parts(rng.random::<u128>(), rng.random::<i128>()))
+                    }
+                })
+                .collect::<Vec<_>>();
+            Ok(Arc::new(
+                Decimal256Array::from(values).with_precision_and_scale(*precision, *scale)?,
+            ))
+        }
+        _ => Err(ArrowError::InvalidArgumentError(format!(
+            "Cannot create decimal array for field {field}"
+        ))),
+    }
 }
 
 #[inline]
@@ -228,8 +298,8 @@ fn create_random_list_array(
         }
         _ => {
             return Err(ArrowError::InvalidArgumentError(format!(
-                "Cannot create list array for field {field:?}"
-            )))
+                "Cannot create list array for field {field}"
+            )));
         }
     };
 
@@ -266,8 +336,8 @@ fn create_random_struct_array(
         DataType::Struct(fields) => fields,
         _ => {
             return Err(ArrowError::InvalidArgumentError(format!(
-                "Cannot create struct array for field {field:?}"
-            )))
+                "Cannot create struct array for field {field}"
+            )));
         }
     };
 
@@ -313,7 +383,7 @@ fn create_random_map_array(
         _ => {
             return Err(ArrowError::InvalidArgumentError(format!(
                 "Cannot create map array for field {field:?}"
-            )))
+            )));
         }
     };
 
@@ -361,7 +431,7 @@ fn create_random_offsets<T: OffsetSizeTrait + SampleUniform>(
     offsets.push(current_offset);
 
     (0..size).for_each(|_| {
-        current_offset += rng.gen_range(min..max);
+        current_offset += rng.random_range(min..max);
         offsets.push(current_offset);
     });
 
@@ -374,12 +444,133 @@ fn create_random_null_buffer(size: usize, null_density: f32) -> Buffer {
     {
         let mut_slice = mut_buf.as_slice_mut();
         (0..size).for_each(|i| {
-            if rng.gen::<f32>() >= null_density {
+            if rng.random::<f32>() >= null_density {
                 bit_util::set_bit(mut_slice, i)
             }
         })
     };
     mut_buf.into()
+}
+
+/// Useful for testing. The range of values are not likely to be representative of the
+/// actual bounds.
+pub trait RandomTemporalValue: ArrowTemporalType {
+    /// Returns the range of values for `impl`'d type
+    fn value_range() -> impl SampleRange<Self::Native>;
+
+    /// Generate a random value within the range of the type
+    fn gen_range<R: Rng>(rng: &mut R) -> Self::Native
+    where
+        Self::Native: SampleUniform,
+    {
+        rng.random_range(Self::value_range())
+    }
+
+    /// Generate a random value of the type
+    fn random<R: Rng>(rng: &mut R) -> Self::Native
+    where
+        Self::Native: SampleUniform,
+    {
+        Self::gen_range(rng)
+    }
+}
+
+impl RandomTemporalValue for TimestampSecondType {
+    /// Range of values for a timestamp in seconds. The range begins at the start
+    /// of the unix epoch and continues for 100 years.
+    fn value_range() -> impl SampleRange<Self::Native> {
+        0..60 * 60 * 24 * 365 * 100
+    }
+}
+
+impl RandomTemporalValue for TimestampMillisecondType {
+    /// Range of values for a timestamp in milliseconds. The range begins at the start
+    /// of the unix epoch and continues for 100 years.
+    fn value_range() -> impl SampleRange<Self::Native> {
+        0..1_000 * 60 * 60 * 24 * 365 * 100
+    }
+}
+
+impl RandomTemporalValue for TimestampMicrosecondType {
+    /// Range of values for a timestamp in microseconds. The range begins at the start
+    /// of the unix epoch and continues for 100 years.
+    fn value_range() -> impl SampleRange<Self::Native> {
+        0..1_000 * 1_000 * 60 * 60 * 24 * 365 * 100
+    }
+}
+
+impl RandomTemporalValue for TimestampNanosecondType {
+    /// Range of values for a timestamp in nanoseconds. The range begins at the start
+    /// of the unix epoch and continues for 100 years.
+    fn value_range() -> impl SampleRange<Self::Native> {
+        0..1_000 * 1_000 * 1_000 * 60 * 60 * 24 * 365 * 100
+    }
+}
+
+impl RandomTemporalValue for Date32Type {
+    /// Range of values representing the elapsed time since UNIX epoch in days. The
+    /// range begins at the start of the unix epoch and continues for 100 years.
+    fn value_range() -> impl SampleRange<Self::Native> {
+        0..365 * 100
+    }
+}
+
+impl RandomTemporalValue for Date64Type {
+    /// Range of values  representing the elapsed time since UNIX epoch in milliseconds.
+    /// The range begins at the start of the unix epoch and continues for 100 years.
+    fn value_range() -> impl SampleRange<Self::Native> {
+        0..1_000 * 60 * 60 * 24 * 365 * 100
+    }
+}
+
+impl RandomTemporalValue for Time32SecondType {
+    /// Range of values representing the elapsed time since midnight in seconds. The
+    /// range is from 0 to 24 hours.
+    fn value_range() -> impl SampleRange<Self::Native> {
+        0..60 * 60 * 24
+    }
+}
+
+impl RandomTemporalValue for Time32MillisecondType {
+    /// Range of values representing the elapsed time since midnight in milliseconds. The
+    /// range is from 0 to 24 hours.
+    fn value_range() -> impl SampleRange<Self::Native> {
+        0..1_000 * 60 * 60 * 24
+    }
+}
+
+impl RandomTemporalValue for Time64MicrosecondType {
+    /// Range of values representing the elapsed time since midnight in microseconds. The
+    /// range is from 0 to 24 hours.
+    fn value_range() -> impl SampleRange<Self::Native> {
+        0..1_000 * 1_000 * 60 * 60 * 24
+    }
+}
+
+impl RandomTemporalValue for Time64NanosecondType {
+    /// Range of values representing the elapsed time since midnight in nanoseconds. The
+    /// range is from 0 to 24 hours.
+    fn value_range() -> impl SampleRange<Self::Native> {
+        0..1_000 * 1_000 * 1_000 * 60 * 60 * 24
+    }
+}
+
+fn create_random_temporal_array<T>(size: usize, null_density: f32) -> PrimitiveArray<T>
+where
+    T: RandomTemporalValue,
+    <T as ArrowPrimitiveType>::Native: SampleUniform,
+{
+    let mut rng = seedable_rng();
+
+    (0..size)
+        .map(|_| {
+            if rng.random::<f32>() < null_density {
+                None
+            } else {
+                Some(T::random(&mut rng))
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -389,7 +580,19 @@ mod tests {
     #[test]
     fn test_create_batch() {
         let size = 32;
-        let fields = vec![Field::new("a", DataType::Int32, true)];
+        let fields = vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new(
+                "timestamp_without_timezone",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new(
+                "timestamp_with_timezone",
+                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                true,
+            ),
+        ];
         let schema = Schema::new(fields);
         let schema_ref = Arc::new(schema);
         let batch = create_random_batch(schema_ref.clone(), size, 0.35, 0.7).unwrap();
@@ -408,7 +611,7 @@ mod tests {
             Field::new("a", DataType::Int32, false),
             Field::new(
                 "b",
-                DataType::List(Arc::new(Field::new("item", DataType::LargeUtf8, false))),
+                DataType::List(Arc::new(Field::new_list_field(DataType::LargeUtf8, false))),
                 false,
             ),
             Field::new("a", DataType::Int32, false),
@@ -421,6 +624,7 @@ mod tests {
         assert_eq!(batch.num_columns(), schema_ref.fields().len());
         for array in batch.columns() {
             assert_eq!(array.null_count(), 0);
+            assert_eq!(array.logical_null_count(), 0);
         }
         // Test that the list's child values are non-null
         let b_array = batch.column(1);
@@ -438,10 +642,8 @@ mod tests {
             Field::new("b", DataType::Boolean, true),
             Field::new(
                 "c",
-                DataType::LargeList(Arc::new(Field::new(
-                    "item",
-                    DataType::List(Arc::new(Field::new(
-                        "item",
+                DataType::LargeList(Arc::new(Field::new_list_field(
+                    DataType::List(Arc::new(Field::new_list_field(
                         DataType::FixedSizeBinary(6),
                         true,
                     ))),
@@ -580,6 +782,7 @@ mod tests {
         assert_eq!(array.len(), 100);
         // Map field is not null
         assert_eq!(array.null_count(), 0);
+        assert_eq!(array.logical_null_count(), 0);
         // Maps have multiple values like a list, so internal arrays are longer
         assert!(array.as_map().keys().len() > array.len());
         assert!(array.as_map().values().len() > array.len());
@@ -590,5 +793,23 @@ mod tests {
 
         assert_eq!(array.as_map().keys().data_type(), &DataType::Utf8);
         assert_eq!(array.as_map().values().data_type(), &DataType::Utf8);
+    }
+
+    #[test]
+    fn test_create_decimal_array() {
+        let size = 10;
+        let fields = vec![
+            Field::new("a", DataType::Decimal128(10, -2), true),
+            Field::new("b", DataType::Decimal256(10, -2), true),
+        ];
+        let schema = Schema::new(fields);
+        let schema_ref = Arc::new(schema);
+        let batch = create_random_batch(schema_ref.clone(), size, 0.35, 0.7).unwrap();
+
+        assert_eq!(batch.schema(), schema_ref);
+        assert_eq!(batch.num_columns(), schema_ref.fields().len());
+        for array in batch.columns() {
+            assert_eq!(array.len(), size);
+        }
     }
 }

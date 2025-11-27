@@ -78,7 +78,7 @@ pub(crate) fn dictionary_cast<K: ArrowDictionaryKeyType>(
                 UInt64 => Arc::new(DictionaryArray::<UInt64Type>::from(data)),
                 _ => {
                     return Err(ArrowError::CastError(format!(
-                        "Unsupported type {to_index_type:?} for dictionary index"
+                        "Unsupported type {to_index_type} for dictionary index"
                     )));
                 }
             };
@@ -91,12 +91,17 @@ pub(crate) fn dictionary_cast<K: ArrowDictionaryKeyType>(
             let dict_array = array
                 .as_dictionary::<K>()
                 .downcast_dict::<StringArray>()
-                .unwrap();
+                .ok_or_else(|| {
+                    ArrowError::ComputeError(
+                        "Internal Error: Cannot cast Utf8View to StringArray of expected type"
+                            .to_string(),
+                    )
+                })?;
 
             let string_view = view_from_dict_values::<K, StringViewType, GenericStringType<i32>>(
                 dict_array.values(),
                 dict_array.keys(),
-            );
+            )?;
             Ok(Arc::new(string_view))
         }
         BinaryView => {
@@ -105,12 +110,17 @@ pub(crate) fn dictionary_cast<K: ArrowDictionaryKeyType>(
             let dict_array = array
                 .as_dictionary::<K>()
                 .downcast_dict::<BinaryArray>()
-                .unwrap();
+                .ok_or_else(|| {
+                    ArrowError::ComputeError(
+                        "Internal Error: Cannot cast BinaryView to BinaryArray of expected type"
+                            .to_string(),
+                    )
+                })?;
 
             let binary_view = view_from_dict_values::<K, BinaryViewType, BinaryType>(
                 dict_array.values(),
                 dict_array.keys(),
-            );
+            )?;
             Ok(Arc::new(binary_view))
         }
         _ => unpack_dictionary::<K>(array, to_type, cast_options),
@@ -120,7 +130,7 @@ pub(crate) fn dictionary_cast<K: ArrowDictionaryKeyType>(
 fn view_from_dict_values<K: ArrowDictionaryKeyType, T: ByteViewType, V: ByteArrayType>(
     array: &GenericByteArray<V>,
     keys: &PrimitiveArray<K>,
-) -> GenericByteViewArray<T> {
+) -> Result<GenericByteViewArray<T>, ArrowError> {
     let value_buffer = array.values();
     let value_offsets = array.value_offsets();
     let mut builder = GenericByteViewBuilder::<T>::with_capacity(keys.len());
@@ -128,7 +138,9 @@ fn view_from_dict_values<K: ArrowDictionaryKeyType, T: ByteViewType, V: ByteArra
     for i in keys.iter() {
         match i {
             Some(v) => {
-                let idx = v.to_usize().unwrap();
+                let idx = v.to_usize().ok_or_else(|| {
+                    ArrowError::ComputeError("Invalid dictionary index".to_string())
+                })?;
 
                 // Safety
                 // (1) The index is within bounds as they are offsets
@@ -145,7 +157,7 @@ fn view_from_dict_values<K: ArrowDictionaryKeyType, T: ByteViewType, V: ByteArra
             }
         }
     }
-    builder.finish()
+    Ok(builder.finish())
 }
 
 // Unpack a dictionary where the keys are of type <K> into a flattened array of type to_type
@@ -160,6 +172,26 @@ where
     let dict_array = array.as_dictionary::<K>();
     let cast_dict_values = cast_with_options(dict_array.values(), to_type, cast_options)?;
     take(cast_dict_values.as_ref(), dict_array.keys(), None)
+}
+
+/// Pack a data type into a dictionary array passing the values through a primitive array
+pub(crate) fn pack_array_to_dictionary_via_primitive<K: ArrowDictionaryKeyType>(
+    array: &dyn Array,
+    primitive_type: DataType,
+    dict_value_type: &DataType,
+    cast_options: &CastOptions,
+) -> Result<ArrayRef, ArrowError> {
+    let primitive = cast_with_options(array, &primitive_type, cast_options)?;
+    let dict = cast_with_options(
+        primitive.as_ref(),
+        &DataType::Dictionary(Box::new(K::DATA_TYPE), Box::new(primitive_type)),
+        cast_options,
+    )?;
+    cast_with_options(
+        dict.as_ref(),
+        &DataType::Dictionary(Box::new(K::DATA_TYPE), Box::new(dict_value_type.clone())),
+        cast_options,
+    )
 }
 
 /// Attempts to encode an array into an `ArrayDictionary` with index
@@ -182,12 +214,73 @@ pub(crate) fn cast_to_dictionary<K: ArrowDictionaryKeyType>(
         UInt16 => pack_numeric_to_dictionary::<K, UInt16Type>(array, dict_value_type, cast_options),
         UInt32 => pack_numeric_to_dictionary::<K, UInt32Type>(array, dict_value_type, cast_options),
         UInt64 => pack_numeric_to_dictionary::<K, UInt64Type>(array, dict_value_type, cast_options),
-        Decimal128(_, _) => {
-            pack_numeric_to_dictionary::<K, Decimal128Type>(array, dict_value_type, cast_options)
+        Decimal32(p, s) => pack_decimal_to_dictionary::<K, Decimal32Type>(
+            array,
+            dict_value_type,
+            p,
+            s,
+            cast_options,
+        ),
+        Decimal64(p, s) => pack_decimal_to_dictionary::<K, Decimal64Type>(
+            array,
+            dict_value_type,
+            p,
+            s,
+            cast_options,
+        ),
+        Decimal128(p, s) => pack_decimal_to_dictionary::<K, Decimal128Type>(
+            array,
+            dict_value_type,
+            p,
+            s,
+            cast_options,
+        ),
+        Decimal256(p, s) => pack_decimal_to_dictionary::<K, Decimal256Type>(
+            array,
+            dict_value_type,
+            p,
+            s,
+            cast_options,
+        ),
+        Float16 => {
+            pack_numeric_to_dictionary::<K, Float16Type>(array, dict_value_type, cast_options)
         }
-        Decimal256(_, _) => {
-            pack_numeric_to_dictionary::<K, Decimal256Type>(array, dict_value_type, cast_options)
+        Float32 => {
+            pack_numeric_to_dictionary::<K, Float32Type>(array, dict_value_type, cast_options)
         }
+        Float64 => {
+            pack_numeric_to_dictionary::<K, Float64Type>(array, dict_value_type, cast_options)
+        }
+        Date32 => pack_array_to_dictionary_via_primitive::<K>(
+            array,
+            DataType::Int32,
+            dict_value_type,
+            cast_options,
+        ),
+        Date64 => pack_array_to_dictionary_via_primitive::<K>(
+            array,
+            DataType::Int64,
+            dict_value_type,
+            cast_options,
+        ),
+        Time32(_) => pack_array_to_dictionary_via_primitive::<K>(
+            array,
+            DataType::Int32,
+            dict_value_type,
+            cast_options,
+        ),
+        Time64(_) => pack_array_to_dictionary_via_primitive::<K>(
+            array,
+            DataType::Int64,
+            dict_value_type,
+            cast_options,
+        ),
+        Timestamp(_, _) => pack_array_to_dictionary_via_primitive::<K>(
+            array,
+            DataType::Int64,
+            dict_value_type,
+            cast_options,
+        ),
         Utf8 => {
             // If the input is a view type, we can avoid casting (thus copying) the data
             if array.data_type() == &DataType::Utf8View {
@@ -216,8 +309,11 @@ pub(crate) fn cast_to_dictionary<K: ArrowDictionaryKeyType>(
             }
             pack_byte_to_dictionary::<K, GenericBinaryType<i64>>(array, cast_options)
         }
+        FixedSizeBinary(byte_size) => {
+            pack_byte_to_fixed_size_dictionary::<K>(array, cast_options, byte_size)
+        }
         _ => Err(ArrowError::CastError(format!(
-            "Unsupported output type for dictionary packing: {dict_value_type:?}"
+            "Unsupported output type for dictionary packing: {dict_value_type}"
         ))),
     }
 }
@@ -250,6 +346,36 @@ where
     Ok(Arc::new(b.finish()))
 }
 
+pub(crate) fn pack_decimal_to_dictionary<K, D>(
+    array: &dyn Array,
+    dict_value_type: &DataType,
+    precision: u8,
+    scale: i8,
+    cast_options: &CastOptions,
+) -> Result<ArrayRef, ArrowError>
+where
+    K: ArrowDictionaryKeyType,
+    D: DecimalType + ArrowPrimitiveType,
+{
+    let dict = pack_numeric_to_dictionary::<K, D>(array, dict_value_type, cast_options)?;
+    let dict = dict
+        .as_dictionary::<K>()
+        .downcast_dict::<PrimitiveArray<D>>()
+        .ok_or_else(|| {
+            ArrowError::ComputeError(format!(
+                "Internal Error: Cannot cast dict to {}Array",
+                D::PREFIX
+            ))
+        })?;
+    let value = dict.values().clone();
+    // Set correct precision/scale
+    let value = value.with_precision_and_scale(precision, scale)?;
+    Ok(Arc::new(DictionaryArray::<K>::try_new(
+        dict.keys().clone(),
+        Arc::new(value),
+    )?))
+}
+
 pub(crate) fn string_view_to_dictionary<K, O: OffsetSizeTrait>(
     array: &dyn Array,
 ) -> Result<ArrayRef, ArrowError>
@@ -261,7 +387,12 @@ where
         1024,
         1024,
     );
-    let string_view = array.as_any().downcast_ref::<StringViewArray>().unwrap();
+    let string_view = array
+        .as_any()
+        .downcast_ref::<StringViewArray>()
+        .ok_or_else(|| {
+            ArrowError::ComputeError("Internal Error: Cannot cast to StringViewArray".to_string())
+        })?;
     for v in string_view.iter() {
         match v {
             Some(v) => {
@@ -287,7 +418,12 @@ where
         1024,
         1024,
     );
-    let binary_view = array.as_any().downcast_ref::<BinaryViewArray>().unwrap();
+    let binary_view = array
+        .as_any()
+        .downcast_ref::<BinaryViewArray>()
+        .ok_or_else(|| {
+            ArrowError::ComputeError("Internal Error: Cannot cast to BinaryViewArray".to_string())
+        })?;
     for v in binary_view.iter() {
         match v {
             Some(v) => {
@@ -316,8 +452,41 @@ where
     let values = cast_values
         .as_any()
         .downcast_ref::<GenericByteArray<T>>()
-        .unwrap();
+        .ok_or_else(|| {
+            ArrowError::ComputeError("Internal Error: Cannot cast to GenericByteArray".to_string())
+        })?;
     let mut b = GenericByteDictionaryBuilder::<K, T>::with_capacity(values.len(), 1024, 1024);
+
+    // copy each element one at a time
+    for i in 0..values.len() {
+        if values.is_null(i) {
+            b.append_null();
+        } else {
+            b.append(values.value(i))?;
+        }
+    }
+    Ok(Arc::new(b.finish()))
+}
+
+// Packs the data as a GenericByteDictionaryBuilder, if possible, with the
+// key types of K
+pub(crate) fn pack_byte_to_fixed_size_dictionary<K>(
+    array: &dyn Array,
+    cast_options: &CastOptions,
+    byte_width: i32,
+) -> Result<ArrayRef, ArrowError>
+where
+    K: ArrowDictionaryKeyType,
+{
+    let cast_values =
+        cast_with_options(array, &DataType::FixedSizeBinary(byte_width), cast_options)?;
+    let values = cast_values
+        .as_any()
+        .downcast_ref::<FixedSizeBinaryArray>()
+        .ok_or_else(|| {
+            ArrowError::ComputeError("Internal Error: Cannot cast to GenericByteArray".to_string())
+        })?;
+    let mut b = FixedSizeBinaryDictionaryBuilder::<K>::with_capacity(1024, 1024, byte_width);
 
     // copy each element one at a time
     for i in 0..values.len() {

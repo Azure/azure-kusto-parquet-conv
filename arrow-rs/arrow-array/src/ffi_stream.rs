@@ -64,7 +64,7 @@ use std::{
 };
 
 use arrow_data::ffi::FFI_ArrowArray;
-use arrow_schema::{ffi::FFI_ArrowSchema, ArrowError, Schema, SchemaRef};
+use arrow_schema::{ArrowError, Schema, SchemaRef, ffi::FFI_ArrowSchema};
 
 use crate::array::Array;
 use crate::array::StructArray;
@@ -83,17 +83,18 @@ const ENOSYS: i32 = 78;
 /// This was created by bindgen
 #[repr(C)]
 #[derive(Debug)]
-#[allow(missing_docs)]
+#[allow(non_camel_case_types)]
 pub struct FFI_ArrowArrayStream {
-    pub get_schema: Option<
-        unsafe extern "C" fn(arg1: *mut FFI_ArrowArrayStream, out: *mut FFI_ArrowSchema) -> c_int,
-    >,
-    pub get_next: Option<
-        unsafe extern "C" fn(arg1: *mut FFI_ArrowArrayStream, out: *mut FFI_ArrowArray) -> c_int,
-    >,
-    pub get_last_error:
-        Option<unsafe extern "C" fn(arg1: *mut FFI_ArrowArrayStream) -> *const c_char>,
-    pub release: Option<unsafe extern "C" fn(arg1: *mut FFI_ArrowArrayStream)>,
+    /// C function to get schema from the stream
+    pub get_schema:
+        Option<unsafe extern "C" fn(arg1: *mut Self, out: *mut FFI_ArrowSchema) -> c_int>,
+    /// C function to get next array from the stream
+    pub get_next: Option<unsafe extern "C" fn(arg1: *mut Self, out: *mut FFI_ArrowArray) -> c_int>,
+    /// C function to get the error from last operation on the stream
+    pub get_last_error: Option<unsafe extern "C" fn(arg1: *mut Self) -> *const c_char>,
+    /// C function to release the stream
+    pub release: Option<unsafe extern "C" fn(arg1: *mut Self)>,
+    /// Private data used by the stream
     pub private_data: *mut c_void,
 }
 
@@ -104,13 +105,13 @@ unsafe extern "C" fn release_stream(stream: *mut FFI_ArrowArrayStream) {
     if stream.is_null() {
         return;
     }
-    let stream = &mut *stream;
+    let stream = unsafe { &mut *stream };
 
     stream.get_schema = None;
     stream.get_next = None;
     stream.get_last_error = None;
 
-    let private_data = Box::from_raw(stream.private_data as *mut StreamPrivateData);
+    let private_data = unsafe { Box::from_raw(stream.private_data as *mut StreamPrivateData) };
     drop(private_data);
 
     stream.release = None;
@@ -187,7 +188,7 @@ impl FFI_ArrowArrayStream {
     /// [move]: https://arrow.apache.org/docs/format/CDataInterface.html#moving-an-array
     /// [valid]: https://doc.rust-lang.org/std/ptr/index.html#safety
     pub unsafe fn from_raw(raw_stream: *mut FFI_ArrowArrayStream) -> Self {
-        std::ptr::replace(raw_stream, Self::empty())
+        unsafe { std::ptr::replace(raw_stream, Self::empty()) }
     }
 
     /// Creates a new empty [FFI_ArrowArrayStream]. Used to import from the C Stream Interface.
@@ -275,6 +276,7 @@ fn get_error_code(err: &ArrowError) -> i32 {
 }
 
 /// A `RecordBatchReader` which imports Arrays from `FFI_ArrowArrayStream`.
+///
 /// Struct used to fetch `RecordBatch` from the C Stream Interface.
 /// Its main responsibility is to expose `RecordBatchReader` functionality
 /// that requires [FFI_ArrowArrayStream].
@@ -328,7 +330,7 @@ impl ArrowArrayStreamReader {
     ///
     /// See [`FFI_ArrowArrayStream::from_raw`]
     pub unsafe fn from_raw(raw_stream: *mut FFI_ArrowArrayStream) -> Result<Self> {
-        Self::try_new(FFI_ArrowArrayStream::from_raw(raw_stream))
+        Self::try_new(unsafe { FFI_ArrowArrayStream::from_raw(raw_stream) })
     }
 
     /// Get the last error from `ArrowArrayStreamReader`
@@ -375,21 +377,6 @@ impl RecordBatchReader for ArrowArrayStreamReader {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
-}
-
-/// Exports a record batch reader to raw pointer of the C Stream Interface provided by the consumer.
-///
-/// # Safety
-/// Assumes that the pointer represents valid C Stream Interfaces, both in memory
-/// representation and lifetime via the `release` mechanism.
-#[deprecated(note = "Use FFI_ArrowArrayStream::new")]
-pub unsafe fn export_reader_into_raw(
-    reader: Box<dyn RecordBatchReader + Send>,
-    out_stream: *mut FFI_ArrowArrayStream,
-) {
-    let stream = FFI_ArrowArrayStream::new(reader);
-
-    std::ptr::write_unaligned(out_stream, stream);
 }
 
 #[cfg(test)]

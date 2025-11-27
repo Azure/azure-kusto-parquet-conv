@@ -33,10 +33,28 @@ use crate::util::bit_util::FromBytes;
 
 /// Rust representation for logical type INT96, value is backed by an array of `u32`.
 /// The type only takes 12 bytes, without extra padding.
-#[derive(Clone, Copy, Debug, PartialOrd, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Int96 {
     value: [u32; 3],
 }
+
+const JULIAN_DAY_OF_EPOCH: i64 = 2_440_588;
+
+/// Number of seconds in a day
+const SECONDS_IN_DAY: i64 = 86_400;
+/// Number of milliseconds in a second
+const MILLISECONDS: i64 = 1_000;
+/// Number of microseconds in a second
+const MICROSECONDS: i64 = 1_000_000;
+/// Number of nanoseconds in a second
+const NANOSECONDS: i64 = 1_000_000_000;
+
+/// Number of milliseconds in a day
+const MILLISECONDS_IN_DAY: i64 = SECONDS_IN_DAY * MILLISECONDS;
+/// Number of microseconds in a day
+const MICROSECONDS_IN_DAY: i64 = SECONDS_IN_DAY * MICROSECONDS;
+/// Number of nanoseconds in a day
+const NANOSECONDS_IN_DAY: i64 = SECONDS_IN_DAY * NANOSECONDS;
 
 impl Int96 {
     /// Creates new INT96 type struct with no data set.
@@ -56,40 +74,88 @@ impl Int96 {
         self.value = [elem0, elem1, elem2];
     }
 
-    /// Converts this INT96 into an i64 representing the number of MILLISECONDS since Epoch
-    pub fn to_i64(&self) -> i64 {
-        let (seconds, nanoseconds) = self.to_seconds_and_nanos();
-        seconds * 1_000 + nanoseconds / 1_000_000
+    /// Converts this INT96 into an i64 representing the number of SECONDS since EPOCH
+    ///
+    /// Will wrap around on overflow
+    #[inline]
+    pub fn to_seconds(&self) -> i64 {
+        let (day, nanos) = self.data_as_days_and_nanos();
+        (day as i64 - JULIAN_DAY_OF_EPOCH)
+            .wrapping_mul(SECONDS_IN_DAY)
+            .wrapping_add(nanos / 1_000_000_000)
     }
 
-    /// Converts this INT96 into an i64 representing the number of MICROSECONDS since Epoch
+    /// Converts this INT96 into an i64 representing the number of MILLISECONDS since EPOCH
+    ///
+    /// Will wrap around on overflow
+    #[inline]
+    pub fn to_millis(&self) -> i64 {
+        let (day, nanos) = self.data_as_days_and_nanos();
+        (day as i64 - JULIAN_DAY_OF_EPOCH)
+            .wrapping_mul(MILLISECONDS_IN_DAY)
+            .wrapping_add(nanos / 1_000_000)
+    }
+
+    /// Converts this INT96 into an i64 representing the number of MICROSECONDS since EPOCH
+    ///
+    /// Will wrap around on overflow
+    #[inline]
     pub fn to_micros(&self) -> i64 {
-        let (seconds, nanoseconds) = self.to_seconds_and_nanos();
-        seconds * 1_000_000 + nanoseconds / 1_000
+        let (day, nanos) = self.data_as_days_and_nanos();
+        (day as i64 - JULIAN_DAY_OF_EPOCH)
+            .wrapping_mul(MICROSECONDS_IN_DAY)
+            .wrapping_add(nanos / 1_000)
     }
 
     /// Converts this INT96 into an i64 representing the number of NANOSECONDS since EPOCH
     ///
     /// Will wrap around on overflow
+    #[inline]
     pub fn to_nanos(&self) -> i64 {
-        let (seconds, nanoseconds) = self.to_seconds_and_nanos();
-        seconds
-            .wrapping_mul(1_000_000_000)
-            .wrapping_add(nanoseconds)
+        let (day, nanos) = self.data_as_days_and_nanos();
+        (day as i64 - JULIAN_DAY_OF_EPOCH)
+            .wrapping_mul(NANOSECONDS_IN_DAY)
+            .wrapping_add(nanos)
     }
 
-    /// Converts this INT96 to a number of seconds and nanoseconds since EPOCH
-    pub fn to_seconds_and_nanos(&self) -> (i64, i64) {
-        const JULIAN_DAY_OF_EPOCH: i64 = 2_440_588;
-        const SECONDS_PER_DAY: i64 = 86_400;
+    #[inline]
+    fn get_days(&self) -> i32 {
+        self.data()[2] as i32
+    }
 
-        let day = self.data()[2] as i64;
-        let nanoseconds = ((self.data()[1] as i64) << 32) + self.data()[0] as i64;
-        let seconds = (day - JULIAN_DAY_OF_EPOCH) * SECONDS_PER_DAY;
-        (seconds, nanoseconds)
+    #[inline]
+    fn get_nanos(&self) -> i64 {
+        ((self.data()[1] as i64) << 32) + self.data()[0] as i64
+    }
+
+    #[inline]
+    fn data_as_days_and_nanos(&self) -> (i32, i64) {
+        (self.get_days(), self.get_nanos())
     }
 }
 
+impl PartialOrd for Int96 {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Int96 {
+    /// Order `Int96` correctly for (deprecated) timestamp types.
+    ///
+    /// Note: this is done even though the Int96 type is deprecated and the
+    /// [spec does not define the sort order]
+    /// because some engines, notably Spark and Databricks Photon still write
+    /// Int96 timestamps and rely on their order for optimization.
+    ///
+    /// [spec does not define the sort order]: https://github.com/apache/parquet-format/blob/cf943c197f4fad826b14ba0c40eb0ffdab585285/src/main/thrift/parquet.thrift#L1079
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.get_days().cmp(&other.get_days()) {
+            Ordering::Equal => self.get_nanos().cmp(&other.get_nanos()),
+            ord => ord,
+        }
+    }
+}
 impl From<Vec<u32>> for Int96 {
     fn from(buf: Vec<u32>) -> Self {
         assert_eq!(buf.len(), 3);
@@ -189,6 +255,7 @@ impl ByteArray {
         )
     }
 
+    /// Try to convert the byte array to a utf8 slice
     pub fn as_utf8(&self) -> Result<&str> {
         self.data
             .as_ref()
@@ -355,20 +422,29 @@ impl From<FixedLenByteArray> for ByteArray {
 pub enum Decimal {
     /// Decimal backed by `i32`.
     Int32 {
+        /// The underlying value
         value: [u8; 4],
+        /// The total number of digits in the number
         precision: i32,
+        /// The number of digits to the right of the decimal point
         scale: i32,
     },
     /// Decimal backed by `i64`.
     Int64 {
+        /// The underlying value
         value: [u8; 8],
+        /// The total number of digits in the number
         precision: i32,
+        /// The number of digits to the right of the decimal point
         scale: i32,
     },
     /// Decimal backed by byte array.
     Bytes {
+        /// The underlying value
         value: ByteArray,
+        /// The total number of digits in the number
         precision: i32,
+        /// The number of digits to the right of the decimal point
         scale: i32,
     },
 }
@@ -474,6 +550,8 @@ macro_rules! gen_as_bytes {
         impl AsBytes for $source_ty {
             #[allow(clippy::size_of_in_element_count)]
             fn as_bytes(&self) -> &[u8] {
+                // SAFETY: macro is only used with primitive types that have no padding, so the
+                // resulting slice always refers to initialized memory.
                 unsafe {
                     std::slice::from_raw_parts(
                         self as *const $source_ty as *const u8,
@@ -487,6 +565,8 @@ macro_rules! gen_as_bytes {
             #[inline]
             #[allow(clippy::size_of_in_element_count)]
             fn slice_as_bytes(self_: &[Self]) -> &[u8] {
+                // SAFETY: macro is only used with primitive types that have no padding, so the
+                // resulting slice always refers to initialized memory.
                 unsafe {
                     std::slice::from_raw_parts(
                         self_.as_ptr() as *const u8,
@@ -498,10 +578,15 @@ macro_rules! gen_as_bytes {
             #[inline]
             #[allow(clippy::size_of_in_element_count)]
             unsafe fn slice_as_bytes_mut(self_: &mut [Self]) -> &mut [u8] {
-                std::slice::from_raw_parts_mut(
-                    self_.as_mut_ptr() as *mut u8,
-                    std::mem::size_of_val(self_),
-                )
+                // SAFETY: macro is only used with primitive types that have no padding, so the
+                // resulting slice always refers to initialized memory. Moreover, self has no
+                // invalid bit patterns, so all writes to the resulting slice will be valid.
+                unsafe {
+                    std::slice::from_raw_parts_mut(
+                        self_.as_mut_ptr() as *mut u8,
+                        std::mem::size_of_val(self_),
+                    )
+                }
             }
         }
     };
@@ -540,12 +625,15 @@ unimplemented_slice_as_bytes!(FixedLenByteArray);
 
 impl AsBytes for bool {
     fn as_bytes(&self) -> &[u8] {
+        // SAFETY: a bool is guaranteed to be either 0x00 or 0x01 in memory, so the memory is
+        // valid.
         unsafe { std::slice::from_raw_parts(self as *const bool as *const u8, 1) }
     }
 }
 
 impl AsBytes for Int96 {
     fn as_bytes(&self) -> &[u8] {
+        // SAFETY: Int96::data is a &[u32; 3].
         unsafe { std::slice::from_raw_parts(self.data() as *const [u32] as *const u8, 12) }
     }
 }
@@ -574,7 +662,7 @@ impl AsBytes for Vec<u8> {
     }
 }
 
-impl<'a> AsBytes for &'a str {
+impl AsBytes for &str {
     fn as_bytes(&self) -> &[u8] {
         (self as &str).as_bytes()
     }
@@ -590,11 +678,11 @@ pub(crate) mod private {
     use bytes::Bytes;
 
     use crate::encodings::decoding::PlainDecoderDetails;
-    use crate::util::bit_util::{read_num_bytes, BitReader, BitWriter};
-
-    use crate::basic::Type;
+    use crate::util::bit_util::{BitReader, BitWriter, read_num_bytes};
 
     use super::{ParquetError, Result, SliceAsBytes};
+    use crate::basic::Type;
+    use crate::file::metadata::HeapSize;
 
     /// Sealed trait to start to remove specialisation from implementations
     ///
@@ -612,6 +700,7 @@ pub(crate) mod private {
         + SliceAsBytes
         + PartialOrd
         + Send
+        + HeapSize
         + crate::encodings::decoding::private::GetDecoder
         + crate::file::statistics::private::MakeStatistics
     {
@@ -637,6 +726,13 @@ pub(crate) mod private {
             (std::mem::size_of::<Self>(), 1)
         }
 
+        /// Return the number of variable length bytes in a given slice of data
+        ///
+        /// Returns the sum of lengths for BYTE_ARRAY data, and None for all other data types
+        fn variable_length_bytes(_: &[Self]) -> Option<i64> {
+            None
+        }
+
         /// Return the value as i64 if possible
         ///
         /// This is essentially the same as `std::convert::TryInto<i64>` but can't be
@@ -660,6 +756,13 @@ pub(crate) mod private {
 
         /// Return the value as an mutable Any to allow for downcasts without transmutation
         fn as_mut_any(&mut self) -> &mut dyn std::any::Any;
+
+        /// Sets the value of this object from the provided [`Bytes`]
+        ///
+        /// Only implemented for `ByteArray` and `FixedLenByteArray`. Will panic for other types.
+        fn set_from_bytes(&mut self, _data: Bytes) {
+            unimplemented!();
+        }
     }
 
     impl ParquetValueType for bool {
@@ -723,6 +826,7 @@ pub(crate) mod private {
 
                 #[inline]
                 fn encode<W: std::io::Write>(values: &[Self], writer: &mut W, _: &mut BitWriter) -> Result<()> {
+                    // SAFETY: Self is one of i32, i64, f32, f64, which have no padding.
                     let raw = unsafe {
                         std::slice::from_raw_parts(
                             values.as_ptr() as *const u8,
@@ -752,9 +856,10 @@ pub(crate) mod private {
                         return Err(eof_err!("Not enough bytes to decode"));
                     }
 
-                    // SAFETY: Raw types should be as per the standard rust bit-vectors
-                    unsafe {
-                        let raw_buffer = &mut Self::slice_as_bytes_mut(buffer)[..bytes_to_decode];
+                    {
+                        // SAFETY: Self has no invalid bit patterns, so writing to the slice
+                        // obtained with slice_as_bytes_mut is always safe.
+                        let raw_buffer = &mut unsafe { Self::slice_as_bytes_mut(buffer) }[..bytes_to_decode];
                         raw_buffer.copy_from_slice(data.slice(
                             decoder.start..decoder.start + bytes_to_decode
                         ).as_ref());
@@ -815,9 +920,7 @@ pub(crate) mod private {
             _: &mut BitWriter,
         ) -> Result<()> {
             for value in values {
-                let raw = unsafe {
-                    std::slice::from_raw_parts(value.data() as *const [u32] as *const u8, 12)
-                };
+                let raw = SliceAsBytes::slice_as_bytes(value.data());
                 writer.write_all(raw)?;
             }
             Ok(())
@@ -892,6 +995,12 @@ pub(crate) mod private {
         }
     }
 
+    impl HeapSize for super::Int96 {
+        fn heap_size(&self) -> usize {
+            0 // no heap allocations
+        }
+    }
+
     impl ParquetValueType for super::ByteArray {
         const PHYSICAL_TYPE: Type = Type::BYTE_ARRAY;
 
@@ -933,14 +1042,16 @@ pub(crate) mod private {
                     return Err(eof_err!("Not enough bytes to decode"));
                 }
 
-                let val: &mut Self = val_array.as_mut_any().downcast_mut().unwrap();
-
-                val.set_data(data.slice(decoder.start..decoder.start + len));
+                val_array.set_data(data.slice(decoder.start..decoder.start + len));
                 decoder.start += len;
             }
             decoder.num_values -= num_values;
 
             Ok(num_values)
+        }
+
+        fn variable_length_bytes(values: &[Self]) -> Option<i64> {
+            Some(values.iter().map(|x| x.len() as i64).sum())
         }
 
         fn skip(decoder: &mut PlainDecoderDetails, num_values: usize) -> Result<usize> {
@@ -973,6 +1084,20 @@ pub(crate) mod private {
         #[inline]
         fn as_mut_any(&mut self) -> &mut dyn std::any::Any {
             self
+        }
+
+        #[inline]
+        fn set_from_bytes(&mut self, data: Bytes) {
+            self.set_data(data);
+        }
+    }
+
+    impl HeapSize for super::ByteArray {
+        fn heap_size(&self) -> usize {
+            // note: this is an estimate, not exact, so just return the size
+            // of the actual data used, don't try to handle the fact that it may
+            // be shared.
+            self.data.as_ref().map(|data| data.len()).unwrap_or(0)
         }
     }
 
@@ -1060,12 +1185,24 @@ pub(crate) mod private {
         fn as_mut_any(&mut self) -> &mut dyn std::any::Any {
             self
         }
+
+        #[inline]
+        fn set_from_bytes(&mut self, data: Bytes) {
+            self.set_data(data);
+        }
+    }
+
+    impl HeapSize for super::FixedLenByteArray {
+        fn heap_size(&self) -> usize {
+            self.0.heap_size()
+        }
     }
 }
 
 /// Contains the Parquet physical type information as well as the Rust primitive type
 /// presentation.
 pub trait DataType: 'static + Send {
+    /// The physical type of the Parquet data type.
     type T: private::ParquetValueType;
 
     /// Returns Parquet physical type.
@@ -1076,20 +1213,24 @@ pub trait DataType: 'static + Send {
     /// Returns size in bytes for Rust representation of the physical type.
     fn get_type_size() -> usize;
 
+    /// Returns the underlying [`ColumnReaderImpl`] for the given [`ColumnReader`].
     fn get_column_reader(column_writer: ColumnReader) -> Option<ColumnReaderImpl<Self>>
     where
         Self: Sized;
 
+    /// Returns the underlying [`ColumnWriterImpl`] for the given [`ColumnWriter`].
     fn get_column_writer(column_writer: ColumnWriter<'_>) -> Option<ColumnWriterImpl<'_, Self>>
     where
         Self: Sized;
 
+    /// Returns a reference to the underlying [`ColumnWriterImpl`] for the given [`ColumnWriter`].
     fn get_column_writer_ref<'a, 'b: 'a>(
         column_writer: &'b ColumnWriter<'a>,
     ) -> Option<&'b ColumnWriterImpl<'a, Self>>
     where
         Self: Sized;
 
+    /// Returns a mutable reference to the underlying [`ColumnWriterImpl`] for the given
     fn get_column_writer_mut<'a, 'b: 'a>(
         column_writer: &'a mut ColumnWriter<'b>,
     ) -> Option<&'a mut ColumnWriterImpl<'b, Self>>
@@ -1097,22 +1238,9 @@ pub trait DataType: 'static + Send {
         Self: Sized;
 }
 
-// Workaround bug in specialization
-pub trait SliceAsBytesDataType: DataType
-where
-    Self::T: SliceAsBytes,
-{
-}
-
-impl<T> SliceAsBytesDataType for T
-where
-    T: DataType,
-    <T as DataType>::T: SliceAsBytes,
-{
-}
-
 macro_rules! make_type {
     ($name:ident, $reader_ident: ident, $writer_ident: ident, $native_ty:ty, $size:expr) => {
+        #[doc = concat!("Parquet physical type: ", stringify!($name))]
         #[derive(Clone)]
         pub struct $name {}
 
@@ -1244,11 +1372,8 @@ mod tests {
 
     #[test]
     fn test_byte_array_from() {
-        assert_eq!(
-            ByteArray::from(vec![b'A', b'B', b'C']).data(),
-            &[b'A', b'B', b'C']
-        );
-        assert_eq!(ByteArray::from("ABC").data(), &[b'A', b'B', b'C']);
+        assert_eq!(ByteArray::from(b"ABC".to_vec()).data(), b"ABC");
+        assert_eq!(ByteArray::from("ABC").data(), b"ABC");
         assert_eq!(
             ByteArray::from(Bytes::from(vec![1u8, 2u8, 3u8, 4u8, 5u8])).data(),
             &[1u8, 2u8, 3u8, 4u8, 5u8]
