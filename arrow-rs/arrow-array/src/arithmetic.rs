@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_buffer::{i256, ArrowNativeType, IntervalDayTime, IntervalMonthDayNano};
+use arrow_buffer::{ArrowNativeType, IntervalDayTime, IntervalMonthDayNano, i256};
 use arrow_schema::ArrowError;
 use half::f16;
-use num::complex::ComplexFloat;
+use num_complex::ComplexFloat;
 use std::cmp::Ordering;
 
 /// Trait for [`ArrowNativeType`] that adds checked and unchecked arithmetic operations,
@@ -154,7 +154,7 @@ macro_rules! native_type_op {
             #[inline]
             fn add_checked(self, rhs: Self) -> Result<Self, ArrowError> {
                 self.checked_add(rhs).ok_or_else(|| {
-                    ArrowError::ComputeError(format!(
+                    ArrowError::ArithmeticOverflow(format!(
                         "Overflow happened on: {:?} + {:?}",
                         self, rhs
                     ))
@@ -169,7 +169,7 @@ macro_rules! native_type_op {
             #[inline]
             fn sub_checked(self, rhs: Self) -> Result<Self, ArrowError> {
                 self.checked_sub(rhs).ok_or_else(|| {
-                    ArrowError::ComputeError(format!(
+                    ArrowError::ArithmeticOverflow(format!(
                         "Overflow happened on: {:?} - {:?}",
                         self, rhs
                     ))
@@ -184,7 +184,7 @@ macro_rules! native_type_op {
             #[inline]
             fn mul_checked(self, rhs: Self) -> Result<Self, ArrowError> {
                 self.checked_mul(rhs).ok_or_else(|| {
-                    ArrowError::ComputeError(format!(
+                    ArrowError::ArithmeticOverflow(format!(
                         "Overflow happened on: {:?} * {:?}",
                         self, rhs
                     ))
@@ -202,7 +202,7 @@ macro_rules! native_type_op {
                     Err(ArrowError::DivideByZero)
                 } else {
                     self.checked_div(rhs).ok_or_else(|| {
-                        ArrowError::ComputeError(format!(
+                        ArrowError::ArithmeticOverflow(format!(
                             "Overflow happened on: {:?} / {:?}",
                             self, rhs
                         ))
@@ -221,7 +221,7 @@ macro_rules! native_type_op {
                     Err(ArrowError::DivideByZero)
                 } else {
                     self.checked_rem(rhs).ok_or_else(|| {
-                        ArrowError::ComputeError(format!(
+                        ArrowError::ArithmeticOverflow(format!(
                             "Overflow happened on: {:?} % {:?}",
                             self, rhs
                         ))
@@ -237,14 +237,17 @@ macro_rules! native_type_op {
             #[inline]
             fn neg_checked(self) -> Result<Self, ArrowError> {
                 self.checked_neg().ok_or_else(|| {
-                    ArrowError::ComputeError(format!("Overflow happened on: {:?}", self))
+                    ArrowError::ArithmeticOverflow(format!("Overflow happened on: - {:?}", self))
                 })
             }
 
             #[inline]
             fn pow_checked(self, exp: u32) -> Result<Self, ArrowError> {
                 self.checked_pow(exp).ok_or_else(|| {
-                    ArrowError::ComputeError(format!("Overflow happened on: {:?} ^ {exp:?}", self))
+                    ArrowError::ArithmeticOverflow(format!(
+                        "Overflow happened on: {:?} ^ {exp:?}",
+                        self
+                    ))
                 })
             }
 
@@ -285,7 +288,7 @@ native_type_op!(u8);
 native_type_op!(u16);
 native_type_op!(u32);
 native_type_op!(u64);
-native_type_op!(i256, i256::ZERO, i256::ONE, i256::MIN, i256::MAX);
+native_type_op!(i256, i256::ZERO, i256::ONE);
 
 native_type_op!(IntervalDayTime, IntervalDayTime::ZERO, IntervalDayTime::ONE);
 native_type_op!(
@@ -415,20 +418,56 @@ native_type_float_op!(
     f32,
     0.,
     1.,
-    unsafe { std::mem::transmute(-1_i32) },
-    unsafe { std::mem::transmute(i32::MAX) }
+    unsafe {
+        // Need to allow in clippy because
+        // current MSRV (Minimum Supported Rust Version) is `1.85.0` but this item is stable since `1.87.0`
+        #[allow(unnecessary_transmutes)]
+        std::mem::transmute(-1_i32)
+    },
+    unsafe {
+        // Need to allow in clippy because
+        // current MSRV (Minimum Supported Rust Version) is `1.85.0` but this item is stable since `1.87.0`
+        #[allow(unnecessary_transmutes)]
+        std::mem::transmute(i32::MAX)
+    }
 );
 native_type_float_op!(
     f64,
     0.,
     1.,
-    unsafe { std::mem::transmute(-1_i64) },
-    unsafe { std::mem::transmute(i64::MAX) }
+    unsafe {
+        // Need to allow in clippy because
+        // current MSRV (Minimum Supported Rust Version) is `1.85.0` but this item is stable since `1.87.0`
+        #[allow(unnecessary_transmutes)]
+        std::mem::transmute(-1_i64)
+    },
+    unsafe {
+        // Need to allow in clippy because
+        // current MSRV (Minimum Supported Rust Version) is `1.85.0` but this item is stable since `1.87.0`
+        #[allow(unnecessary_transmutes)]
+        std::mem::transmute(i64::MAX)
+    }
 );
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    macro_rules! assert_approx_eq {
+        ( $x: expr, $y: expr ) => {{ assert_approx_eq!($x, $y, 1.0e-4) }};
+        ( $x: expr, $y: expr, $tol: expr ) => {{
+            let x_val = $x;
+            let y_val = $y;
+            let diff = f64::from((x_val - y_val).abs());
+            assert!(
+                diff <= $tol,
+                "{} != {} (with tolerance = {})",
+                x_val,
+                y_val,
+                $tol
+            );
+        }};
+    }
 
     #[test]
     fn test_native_type_is_zero() {
@@ -800,9 +839,9 @@ mod tests {
         assert_eq!(8_u16.pow_wrapping(2_u32), 64_u16);
         assert_eq!(8_u32.pow_wrapping(2_u32), 64_u32);
         assert_eq!(8_u64.pow_wrapping(2_u32), 64_u64);
-        assert_eq!(f16::from_f32(8.0).pow_wrapping(2_u32), f16::from_f32(64.0));
-        assert_eq!(8.0_f32.pow_wrapping(2_u32), 64_f32);
-        assert_eq!(8.0_f64.pow_wrapping(2_u32), 64_f64);
+        assert_approx_eq!(f16::from_f32(8.0).pow_wrapping(2_u32), f16::from_f32(64.0));
+        assert_approx_eq!(8.0_f32.pow_wrapping(2_u32), 64_f32);
+        assert_approx_eq!(8.0_f64.pow_wrapping(2_u32), 64_f64);
 
         // pow_checked
         assert_eq!(8_i8.pow_checked(2_u32).unwrap(), 64_i8);
@@ -818,12 +857,12 @@ mod tests {
         assert_eq!(8_u16.pow_checked(2_u32).unwrap(), 64_u16);
         assert_eq!(8_u32.pow_checked(2_u32).unwrap(), 64_u32);
         assert_eq!(8_u64.pow_checked(2_u32).unwrap(), 64_u64);
-        assert_eq!(
+        assert_approx_eq!(
             f16::from_f32(8.0).pow_checked(2_u32).unwrap(),
             f16::from_f32(64.0)
         );
-        assert_eq!(8.0_f32.pow_checked(2_u32).unwrap(), 64_f32);
-        assert_eq!(8.0_f64.pow_checked(2_u32).unwrap(), 64_f64);
+        assert_approx_eq!(8.0_f32.pow_checked(2_u32).unwrap(), 64_f32);
+        assert_approx_eq!(8.0_f64.pow_checked(2_u32).unwrap(), 64_f64);
     }
 
     #[test]

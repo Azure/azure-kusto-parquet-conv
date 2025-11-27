@@ -76,7 +76,7 @@ fn main() {
     let array_data = ArrayData::builder(DataType::Utf8)
         .len(3)
         .add_buffer(Buffer::from(offsets.to_byte_slice()))
-        .add_buffer(Buffer::from(&values[..]))
+        .add_buffer(Buffer::from(&values))
         .null_bit_buffer(Some(Buffer::from([0b00000101])))
         .build()
         .unwrap();
@@ -88,16 +88,16 @@ fn main() {
     // buffer.
     let value_data = ArrayData::builder(DataType::Int32)
         .len(8)
-        .add_buffer(Buffer::from(&[0, 1, 2, 3, 4, 5, 6, 7].to_byte_slice()))
+        .add_buffer(Buffer::from([0, 1, 2, 3, 4, 5, 6, 7].to_byte_slice()))
         .build()
         .unwrap();
 
     // Construct a buffer for value offsets, for the nested array:
     //  [[0, 1, 2], [3, 4, 5], [6, 7]]
-    let value_offsets = Buffer::from(&[0, 3, 6, 8].to_byte_slice());
+    let value_offsets = Buffer::from([0, 3, 6, 8].to_byte_slice());
 
     // Construct a list array from the above two
-    let list_data_type = DataType::List(Arc::new(Field::new("item", DataType::Int32, false)));
+    let list_data_type = DataType::List(Arc::new(Field::new_list_field(DataType::Int32, false)));
     let list_data = ArrayData::builder(list_data_type)
         .len(3)
         .add_buffer(value_offsets)

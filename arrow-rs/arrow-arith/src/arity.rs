@@ -18,14 +18,12 @@
 //! Kernels for operating on [`PrimitiveArray`]s
 
 use arrow_array::builder::BufferBuilder;
-use arrow_array::types::ArrowDictionaryKeyType;
 use arrow_array::*;
-use arrow_buffer::buffer::NullBuffer;
 use arrow_buffer::ArrowNativeType;
-use arrow_buffer::{Buffer, MutableBuffer};
+use arrow_buffer::MutableBuffer;
+use arrow_buffer::buffer::NullBuffer;
 use arrow_data::ArrayData;
 use arrow_schema::ArrowError;
-use std::sync::Arc;
 
 /// See [`PrimitiveArray::unary`]
 pub fn unary<I, F, O>(array: &PrimitiveArray<I>, op: F) -> PrimitiveArray<O>
@@ -69,97 +67,6 @@ where
     F: Fn(I::Native) -> Result<I::Native, ArrowError>,
 {
     array.try_unary_mut(op)
-}
-
-/// A helper function that applies an infallible unary function to a dictionary array with primitive value type.
-fn unary_dict<K, F, T>(array: &DictionaryArray<K>, op: F) -> Result<ArrayRef, ArrowError>
-where
-    K: ArrowDictionaryKeyType + ArrowNumericType,
-    T: ArrowPrimitiveType,
-    F: Fn(T::Native) -> T::Native,
-{
-    let dict_values = array.values().as_any().downcast_ref().unwrap();
-    let values = unary::<T, F, T>(dict_values, op);
-    Ok(Arc::new(array.with_values(Arc::new(values))))
-}
-
-/// A helper function that applies a fallible unary function to a dictionary array with primitive value type.
-fn try_unary_dict<K, F, T>(array: &DictionaryArray<K>, op: F) -> Result<ArrayRef, ArrowError>
-where
-    K: ArrowDictionaryKeyType + ArrowNumericType,
-    T: ArrowPrimitiveType,
-    F: Fn(T::Native) -> Result<T::Native, ArrowError>,
-{
-    if !PrimitiveArray::<T>::is_compatible(&array.value_type()) {
-        return Err(ArrowError::CastError(format!(
-            "Cannot perform the unary operation of type {} on dictionary array of value type {}",
-            T::DATA_TYPE,
-            array.value_type()
-        )));
-    }
-
-    let dict_values = array.values().as_any().downcast_ref().unwrap();
-    let values = try_unary::<T, F, T>(dict_values, op)?;
-    Ok(Arc::new(array.with_values(Arc::new(values))))
-}
-
-/// Applies an infallible unary function to an array with primitive values.
-#[deprecated(note = "Use arrow_array::AnyDictionaryArray")]
-pub fn unary_dyn<F, T>(array: &dyn Array, op: F) -> Result<ArrayRef, ArrowError>
-where
-    T: ArrowPrimitiveType,
-    F: Fn(T::Native) -> T::Native,
-{
-    downcast_dictionary_array! {
-        array => unary_dict::<_, F, T>(array, op),
-        t => {
-            if PrimitiveArray::<T>::is_compatible(t) {
-                Ok(Arc::new(unary::<T, F, T>(
-                    array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap(),
-                    op,
-                )))
-            } else {
-                Err(ArrowError::NotYetImplemented(format!(
-                    "Cannot perform unary operation of type {} on array of type {}",
-                    T::DATA_TYPE,
-                    t
-                )))
-            }
-        }
-    }
-}
-
-/// Applies a fallible unary function to an array with primitive values.
-#[deprecated(note = "Use arrow_array::AnyDictionaryArray")]
-pub fn try_unary_dyn<F, T>(array: &dyn Array, op: F) -> Result<ArrayRef, ArrowError>
-where
-    T: ArrowPrimitiveType,
-    F: Fn(T::Native) -> Result<T::Native, ArrowError>,
-{
-    downcast_dictionary_array! {
-        array => if array.values().data_type() == &T::DATA_TYPE {
-            try_unary_dict::<_, F, T>(array, op)
-        } else {
-            Err(ArrowError::NotYetImplemented(format!(
-                "Cannot perform unary operation on dictionary array of type {}",
-                array.data_type()
-            )))
-        },
-        t => {
-            if PrimitiveArray::<T>::is_compatible(t) {
-                Ok(Arc::new(try_unary::<T, F, T>(
-                    array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap(),
-                    op,
-                )?))
-            } else {
-                Err(ArrowError::NotYetImplemented(format!(
-                    "Cannot perform unary operation of type {} on array of type {}",
-                    T::DATA_TYPE,
-                    t
-                )))
-            }
-        }
-    }
 }
 
 /// Allies a binary infallable function to two [`PrimitiveArray`]s,
@@ -217,13 +124,13 @@ where
 
     let nulls = NullBuffer::union(a.logical_nulls().as_ref(), b.logical_nulls().as_ref());
 
-    let values = a.values().iter().zip(b.values()).map(|(l, r)| op(*l, *r));
-    // JUSTIFICATION
-    //  Benefit
-    //      ~60% speedup
-    //  Soundness
-    //      `values` is an iterator with a known size from a PrimitiveArray
-    let buffer = unsafe { Buffer::from_trusted_len_iter(values) };
+    let values = a
+        .values()
+        .into_iter()
+        .zip(b.values())
+        .map(|(l, r)| op(*l, *r));
+
+    let buffer: Vec<_> = values.collect();
     Ok(PrimitiveArray::new(buffer.into(), nulls))
 }
 
@@ -313,8 +220,6 @@ where
         ))));
     }
 
-    let nulls = NullBuffer::union(a.logical_nulls().as_ref(), b.logical_nulls().as_ref());
-
     let mut builder = a.into_builder()?;
 
     builder
@@ -323,14 +228,21 @@ where
         .zip(b.values())
         .for_each(|(l, r)| *l = op(*l, *r));
 
-    let array_builder = builder.finish().into_data().into_builder().nulls(nulls);
+    let array = builder.finish();
+
+    // The builder has the null buffer from `a`, it is not changed.
+    let nulls = NullBuffer::union(array.logical_nulls().as_ref(), b.logical_nulls().as_ref());
+
+    let array_builder = array.into_data().into_builder().nulls(nulls);
 
     let array_data = unsafe { array_builder.build_unchecked() };
     Ok(Ok(PrimitiveArray::<T>::from(array_data)))
 }
 
-/// Applies the provided fallible binary operation across `a` and `b`, returning any error,
-/// and collecting the results into a [`PrimitiveArray`]. If any index is null in either `a`
+/// Applies the provided fallible binary operation across `a` and `b`.
+///
+/// This will return any error encountered, or collect the results into
+/// a [`PrimitiveArray`]. If any index is null in either `a`
 /// or `b`, the corresponding index in the result will also be null
 ///
 /// Like [`try_unary`] the function is only evaluated for non-null indices
@@ -381,12 +293,15 @@ where
 }
 
 /// Applies the provided fallible binary operation across `a` and `b` by mutating the mutable
-/// [`PrimitiveArray`] `a` with the results, returning any error. If any index is null in
-/// either `a` or `b`, the corresponding index in the result will also be null
+/// [`PrimitiveArray`] `a` with the results.
 ///
-/// Like [`try_unary`] the function is only evaluated for non-null indices
+/// Returns any error encountered, or collects the results into a [`PrimitiveArray`] as return
+/// value. If any index is null in either `a` or `b`, the corresponding index in the result will
+/// also be null.
 ///
-/// See [`binary_mut`] for errors and buffer reuse information
+/// Like [`try_unary`] the function is only evaluated for non-null indices.
+///
+/// See [`binary_mut`] for errors and buffer reuse information.
 pub fn try_binary_mut<T, F>(
     a: PrimitiveArray<T>,
     b: &PrimitiveArray<T>,
@@ -413,7 +328,8 @@ where
         try_binary_no_nulls_mut(len, a, b, op)
     } else {
         let nulls =
-            NullBuffer::union(a.logical_nulls().as_ref(), b.logical_nulls().as_ref()).unwrap();
+            create_union_null_buffer(a.logical_nulls().as_ref(), b.logical_nulls().as_ref())
+                .unwrap();
 
         let mut builder = a.into_builder()?;
 
@@ -432,6 +348,22 @@ where
         let array_builder = builder.finish().into_data().into_builder();
         let array_data = unsafe { array_builder.nulls(Some(nulls)).build_unchecked() };
         Ok(Ok(PrimitiveArray::<T>::from(array_data)))
+    }
+}
+
+/// Computes the union of the nulls in two optional [`NullBuffer`] which
+/// is not shared with the input buffers.
+///
+/// The union of the nulls is the same as `NullBuffer::union(lhs, rhs)` but
+/// it does not increase the reference count of the null buffer.
+fn create_union_null_buffer(
+    lhs: Option<&NullBuffer>,
+    rhs: Option<&NullBuffer>,
+) -> Option<NullBuffer> {
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) => Some(NullBuffer::new(lhs.inner() & rhs.inner())),
+        (Some(n), None) | (None, Some(n)) => Some(NullBuffer::new(n.inner() & n.inner())),
+        (None, None) => None,
     }
 }
 
@@ -485,8 +417,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::builder::*;
     use arrow_array::types::*;
+    use std::sync::Arc;
 
     #[test]
     #[allow(deprecated)]
@@ -498,53 +430,6 @@ mod tests {
             result,
             Float64Array::from(vec![None, Some(7.0), None, Some(7.0)])
         );
-
-        let result = unary_dyn::<_, Float64Type>(&input_slice, |n| n + 1.0).unwrap();
-
-        assert_eq!(
-            result.as_any().downcast_ref::<Float64Array>().unwrap(),
-            &Float64Array::from(vec![None, Some(7.8), None, Some(8.2)])
-        );
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn test_unary_dict_and_unary_dyn() {
-        let mut builder = PrimitiveDictionaryBuilder::<Int8Type, Int32Type>::new();
-        builder.append(5).unwrap();
-        builder.append(6).unwrap();
-        builder.append(7).unwrap();
-        builder.append(8).unwrap();
-        builder.append_null();
-        builder.append(9).unwrap();
-        let dictionary_array = builder.finish();
-
-        let mut builder = PrimitiveDictionaryBuilder::<Int8Type, Int32Type>::new();
-        builder.append(6).unwrap();
-        builder.append(7).unwrap();
-        builder.append(8).unwrap();
-        builder.append(9).unwrap();
-        builder.append_null();
-        builder.append(10).unwrap();
-        let expected = builder.finish();
-
-        let result = unary_dict::<_, _, Int32Type>(&dictionary_array, |n| n + 1).unwrap();
-        assert_eq!(
-            result
-                .as_any()
-                .downcast_ref::<DictionaryArray<Int8Type>>()
-                .unwrap(),
-            &expected
-        );
-
-        let result = unary_dyn::<_, Int32Type>(&dictionary_array, |n| n + 1).unwrap();
-        assert_eq!(
-            result
-                .as_any()
-                .downcast_ref::<DictionaryArray<Int8Type>>()
-                .unwrap(),
-            &expected
-        );
     }
 
     #[test]
@@ -555,6 +440,25 @@ mod tests {
 
         let expected = Int32Array::from(vec![Some(16), None, Some(12), None, Some(6)]);
         assert_eq!(c, expected);
+    }
+
+    #[test]
+    fn test_binary_mut_null_buffer() {
+        let a = Int32Array::from(vec![Some(3), Some(4), Some(5), Some(6), None]);
+
+        let b = Int32Array::from(vec![Some(10), Some(11), Some(12), Some(13), Some(14)]);
+
+        let r1 = binary_mut(a, &b, |a, b| a + b).unwrap();
+
+        let a = Int32Array::from(vec![Some(3), Some(4), Some(5), Some(6), None]);
+        let b = Int32Array::new(
+            vec![10, 11, 12, 13, 14].into(),
+            Some(vec![true, true, true, true, true].into()),
+        );
+
+        // unwrap here means that no copying occured
+        let r2 = binary_mut(a, &b, |a, b| a + b).unwrap();
+        assert_eq!(r1.unwrap(), r2.unwrap());
     }
 
     #[test]
@@ -585,6 +489,25 @@ mod tests {
         })
         .unwrap()
         .expect_err("should got error");
+    }
+
+    #[test]
+    fn test_try_binary_mut_null_buffer() {
+        let a = Int32Array::from(vec![Some(3), Some(4), Some(5), Some(6), None]);
+
+        let b = Int32Array::from(vec![Some(10), Some(11), Some(12), Some(13), Some(14)]);
+
+        let r1 = try_binary_mut(a, &b, |a, b| Ok(a + b)).unwrap();
+
+        let a = Int32Array::from(vec![Some(3), Some(4), Some(5), Some(6), None]);
+        let b = Int32Array::new(
+            vec![10, 11, 12, 13, 14].into(),
+            Some(vec![true, true, true, true, true].into()),
+        );
+
+        // unwrap here means that no copying occured
+        let r2 = try_binary_mut(a, &b, |a, b| Ok(a + b)).unwrap();
+        assert_eq!(r1.unwrap(), r2.unwrap());
     }
 
     #[test]

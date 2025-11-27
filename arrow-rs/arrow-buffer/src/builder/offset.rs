@@ -19,13 +19,13 @@ use std::ops::Deref;
 
 use crate::{ArrowNativeType, OffsetBuffer};
 
+/// Builder of [`OffsetBuffer`]
 #[derive(Debug)]
 pub struct OffsetBufferBuilder<O: ArrowNativeType> {
     offsets: Vec<O>,
     last_offset: usize,
 }
 
-/// Builder of [`OffsetBuffer`]
 impl<O: ArrowNativeType> OffsetBufferBuilder<O> {
     /// Create a new builder with space for `capacity + 1` offsets
     pub fn new(capacity: usize) -> Self {
@@ -70,8 +70,11 @@ impl<O: ArrowNativeType> OffsetBufferBuilder<O> {
     ///
     /// Panics if offsets overflow `O`
     pub fn finish_cloned(&self) -> OffsetBuffer<O> {
-        O::from_usize(self.last_offset).expect("overflow");
-        unsafe { OffsetBuffer::new_unchecked(self.offsets.clone().into()) }
+        let cloned = Self {
+            offsets: self.offsets.clone(),
+            last_offset: self.last_offset,
+        };
+        cloned.finish()
     }
 }
 

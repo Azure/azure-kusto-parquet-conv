@@ -18,8 +18,7 @@
 //! Contains all supported decoders for Parquet.
 
 use bytes::Bytes;
-use num::traits::WrappingAdd;
-use num::FromPrimitive;
+use num_traits::{FromPrimitive, WrappingAdd};
 use std::{cmp, marker::PhantomData, mem};
 
 use super::rle::RleDecoder;
@@ -27,6 +26,9 @@ use super::rle::RleDecoder;
 use crate::basic::*;
 use crate::data_type::private::ParquetValueType;
 use crate::data_type::*;
+use crate::encodings::decoding::byte_stream_split_decoder::{
+    ByteStreamSplitDecoder, VariableWidthByteStreamSplitDecoder,
+};
 use crate::errors::{ParquetError, Result};
 use crate::schema::types::ColumnDescPtr;
 use crate::util::bit_util::{self, BitReader};
@@ -87,6 +89,7 @@ pub(crate) mod private {
             encoding: Encoding,
         ) -> Result<Box<dyn Decoder<T>>> {
             match encoding {
+                Encoding::BYTE_STREAM_SPLIT => Ok(Box::new(ByteStreamSplitDecoder::new())),
                 Encoding::DELTA_BINARY_PACKED => Ok(Box::new(DeltaBitPackDecoder::new())),
                 _ => get_decoder_default(descr, encoding),
             }
@@ -99,6 +102,7 @@ pub(crate) mod private {
             encoding: Encoding,
         ) -> Result<Box<dyn Decoder<T>>> {
             match encoding {
+                Encoding::BYTE_STREAM_SPLIT => Ok(Box::new(ByteStreamSplitDecoder::new())),
                 Encoding::DELTA_BINARY_PACKED => Ok(Box::new(DeltaBitPackDecoder::new())),
                 _ => get_decoder_default(descr, encoding),
             }
@@ -111,9 +115,7 @@ pub(crate) mod private {
             encoding: Encoding,
         ) -> Result<Box<dyn Decoder<T>>> {
             match encoding {
-                Encoding::BYTE_STREAM_SPLIT => Ok(Box::new(
-                    byte_stream_split_decoder::ByteStreamSplitDecoder::new(),
-                )),
+                Encoding::BYTE_STREAM_SPLIT => Ok(Box::new(ByteStreamSplitDecoder::new())),
                 _ => get_decoder_default(descr, encoding),
             }
         }
@@ -124,9 +126,7 @@ pub(crate) mod private {
             encoding: Encoding,
         ) -> Result<Box<dyn Decoder<T>>> {
             match encoding {
-                Encoding::BYTE_STREAM_SPLIT => Ok(Box::new(
-                    byte_stream_split_decoder::ByteStreamSplitDecoder::new(),
-                )),
+                Encoding::BYTE_STREAM_SPLIT => Ok(Box::new(ByteStreamSplitDecoder::new())),
                 _ => get_decoder_default(descr, encoding),
             }
         }
@@ -153,6 +153,9 @@ pub(crate) mod private {
             encoding: Encoding,
         ) -> Result<Box<dyn Decoder<T>>> {
             match encoding {
+                Encoding::BYTE_STREAM_SPLIT => Ok(Box::new(
+                    VariableWidthByteStreamSplitDecoder::new(descr.type_length()),
+                )),
                 Encoding::DELTA_BYTE_ARRAY => Ok(Box::new(DeltaByteArrayDecoder::new())),
                 _ => get_decoder_default(descr, encoding),
             }
@@ -269,6 +272,7 @@ pub struct PlainDecoderDetails {
 }
 
 /// Plain decoding that supports all types.
+///
 /// Values are encoded back to back. For native types, data is encoded as little endian.
 /// Floating point types are encoded in IEEE.
 /// See [`PlainEncoder`](crate::encoding::PlainEncoder) for more information.
@@ -329,6 +333,7 @@ impl<T: DataType> Decoder<T> for PlainDecoder<T> {
 // RLE_DICTIONARY/PLAIN_DICTIONARY Decoding
 
 /// Dictionary decoder.
+///
 /// The dictionary encoding builds a dictionary of values encountered in a given column.
 /// The dictionary is be stored in a dictionary page per column chunk.
 /// See [`DictEncoder`](crate::encoding::DictEncoder) for more information.
@@ -376,9 +381,19 @@ impl<T: DataType> DictDecoder<T> {
 impl<T: DataType> Decoder<T> for DictDecoder<T> {
     fn set_data(&mut self, data: Bytes, num_values: usize) -> Result<()> {
         // First byte in `data` is bit width
+        if data.is_empty() {
+            return Err(eof_err!("Not enough bytes to decode bit_width"));
+        }
+
         let bit_width = data.as_ref()[0];
+        if bit_width > 32 {
+            return Err(general_err!(
+                "Invalid or corrupted RLE bit width {}. Max allowed is 32",
+                bit_width
+            ));
+        }
         let mut rle_decoder = RleDecoder::new(bit_width);
-        rle_decoder.set_data(data.slice(1..));
+        rle_decoder.set_data(data.slice(1..))?;
         self.num_values = num_values;
         self.rle_decoder = Some(rle_decoder);
         Ok(())
@@ -448,10 +463,17 @@ impl<T: DataType> Decoder<T> for RleValueDecoder<T> {
 
         // We still need to remove prefix of i32 from the stream.
         const I32_SIZE: usize = mem::size_of::<i32>();
+        if data.len() < I32_SIZE {
+            return Err(eof_err!("Not enough bytes to decode"));
+        }
         let data_size = bit_util::read_num_bytes::<i32>(I32_SIZE, data.as_ref()) as usize;
+        if data.len() - I32_SIZE < data_size {
+            return Err(eof_err!("Not enough bytes to decode"));
+        }
+
         self.decoder = RleDecoder::new(1);
         self.decoder
-            .set_data(data.slice(I32_SIZE..I32_SIZE + data_size));
+            .set_data(data.slice(I32_SIZE..I32_SIZE + data_size))?;
         self.values_left = num_values;
         Ok(())
     }
@@ -619,6 +641,19 @@ where
             self.next_block()
         }
     }
+
+    /// Verify the bit width is smaller then the integer type that it is trying to decode.
+    #[inline]
+    fn check_bit_width(&self, bit_width: usize) -> Result<()> {
+        if bit_width > std::mem::size_of::<T::T>() * 8 {
+            return Err(general_err!(
+                "Invalid delta bit width {} which is larger than expected {} ",
+                bit_width,
+                std::mem::size_of::<T::T>() * 8
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl<T: DataType> Decoder<T> for DeltaBitPackDecoder<T>
@@ -645,6 +680,10 @@ where
             .ok_or_else(|| eof_err!("Not enough data to decode 'mini_blocks_per_block'"))?
             .try_into()
             .map_err(|_| general_err!("invalid 'mini_blocks_per_block'"))?;
+
+        if self.mini_blocks_per_block == 0 {
+            return Err(general_err!("cannot have zero miniblocks per block"));
+        }
 
         self.values_left = self
             .bit_reader
@@ -714,6 +753,7 @@ where
             }
 
             let bit_width = self.mini_block_bit_widths[self.mini_block_idx] as usize;
+            self.check_bit_width(bit_width)?;
             let batch_to_read = self.mini_block_remaining.min(to_read - read);
 
             let batch_read = self
@@ -784,6 +824,7 @@ where
             }
 
             let bit_width = self.mini_block_bit_widths[self.mini_block_idx] as usize;
+            self.check_bit_width(bit_width)?;
             let mini_block_to_skip = self.mini_block_remaining.min(to_skip - skip);
             let mini_block_should_skip = mini_block_to_skip;
 
@@ -820,6 +861,7 @@ where
 // DELTA_LENGTH_BYTE_ARRAY Decoding
 
 /// Delta length byte array decoder.
+///
 /// Only applied to byte arrays to separate the length values and the data, the lengths
 /// are encoded using DELTA_BINARY_PACKED encoding.
 /// See [`DeltaLengthByteArrayEncoder`](crate::encoding::DeltaLengthByteArrayEncoder)
@@ -897,11 +939,7 @@ impl<T: DataType> Decoder<T> for DeltaLengthByteArrayDecoder<T> {
 
                 for item in buffer.iter_mut().take(num_values) {
                     let len = self.lengths[self.current_idx] as usize;
-
-                    item.as_mut_any()
-                        .downcast_mut::<ByteArray>()
-                        .unwrap()
-                        .set_data(data.slice(self.offset..self.offset + len));
+                    item.set_from_bytes(data.slice(self.offset..self.offset + len));
 
                     self.offset += len;
                     self.current_idx += 1;
@@ -952,6 +990,7 @@ impl<T: DataType> Decoder<T> for DeltaLengthByteArrayDecoder<T> {
 // DELTA_BYTE_ARRAY Decoding
 
 /// Delta byte array decoder.
+///
 /// Prefix lengths are encoded using `DELTA_BINARY_PACKED` encoding, Suffixes are stored
 /// using `DELTA_LENGTH_BYTE_ARRAY` encoding.
 /// See [`DeltaByteArrayEncoder`](crate::encoding::DeltaByteArrayEncoder) for more
@@ -1025,7 +1064,7 @@ impl<T: DataType> Decoder<T> for DeltaByteArrayDecoder<T> {
 
     fn get(&mut self, buffer: &mut [T::T]) -> Result<usize> {
         match T::get_physical_type() {
-            ty @ Type::BYTE_ARRAY | ty @ Type::FIXED_LEN_BYTE_ARRAY => {
+            Type::BYTE_ARRAY | Type::FIXED_LEN_BYTE_ARRAY => {
                 let num_values = cmp::min(buffer.len(), self.num_values);
                 let mut v: [ByteArray; 1] = [ByteArray::new(); 1];
                 for item in buffer.iter_mut().take(num_values) {
@@ -1047,20 +1086,7 @@ impl<T: DataType> Decoder<T> for DeltaByteArrayDecoder<T> {
                     result.extend_from_slice(suffix);
 
                     let data = Bytes::from(result.clone());
-
-                    match ty {
-                        Type::BYTE_ARRAY => item
-                            .as_mut_any()
-                            .downcast_mut::<ByteArray>()
-                            .unwrap()
-                            .set_data(data),
-                        Type::FIXED_LEN_BYTE_ARRAY => item
-                            .as_mut_any()
-                            .downcast_mut::<FixedLenByteArray>()
-                            .unwrap()
-                            .set_data(data),
-                        _ => unreachable!(),
-                    };
+                    item.set_from_bytes(data);
 
                     self.previous_value = result;
                     self.current_idx += 1;
@@ -1383,6 +1409,13 @@ mod tests {
         test_plain_skip::<FixedLenByteArrayType>(Bytes::from(data_bytes), 3, 6, 4, &[]);
     }
 
+    #[test]
+    fn test_dict_decoder_empty_data() {
+        let mut decoder = DictDecoder::<Int32Type>::new();
+        let err = decoder.set_data(Bytes::new(), 10).unwrap_err();
+        assert_eq!(err.to_string(), "EOF: Not enough bytes to decode bit_width");
+    }
+
     fn test_plain_decode<T: DataType>(
         data: Bytes,
         num_values: usize,
@@ -1458,6 +1491,18 @@ mod tests {
     fn test_rle_value_decode_int32_not_supported() {
         let mut decoder = RleValueDecoder::<Int32Type>::new();
         decoder.set_data(Bytes::from(vec![5, 0, 0, 0]), 1).unwrap();
+    }
+
+    #[test]
+    fn test_rle_value_decode_missing_size() {
+        let mut decoder = RleValueDecoder::<BoolType>::new();
+        assert!(decoder.set_data(Bytes::from(vec![0]), 1).is_err());
+    }
+
+    #[test]
+    fn test_rle_value_decode_missing_data() {
+        let mut decoder = RleValueDecoder::<BoolType>::new();
+        assert!(decoder.set_data(Bytes::from(vec![5, 0, 0, 0]), 1).is_err());
     }
 
     #[test]
@@ -1648,6 +1693,21 @@ mod tests {
     }
 
     #[test]
+    fn test_delta_bit_packed_zero_miniblocks() {
+        // It is invalid for mini_blocks_per_block to be 0
+        let data = vec![
+            128, 1, // block_size = 128
+            0, // mini_blocks_per_block = 0
+        ];
+        let mut decoder = DeltaBitPackDecoder::<Int32Type>::new();
+        let err = decoder.set_data(data.into(), 0).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Parquet error: cannot have zero miniblocks per block"
+        );
+    }
+
+    #[test]
     fn test_delta_bit_packed_decoder_sample() {
         let data_bytes = vec![
             128, 1, 4, 3, 58, 28, 6, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -1785,7 +1845,7 @@ mod tests {
             ],
             vec![f32::from_le_bytes([0xA3, 0xB4, 0xC5, 0xD6])],
         ];
-        test_byte_stream_split_decode::<FloatType>(data);
+        test_byte_stream_split_decode::<FloatType>(data, -1);
     }
 
     #[test]
@@ -1794,7 +1854,76 @@ mod tests {
             f64::from_le_bytes([0, 1, 2, 3, 4, 5, 6, 7]),
             f64::from_le_bytes([8, 9, 10, 11, 12, 13, 14, 15]),
         ]];
-        test_byte_stream_split_decode::<DoubleType>(data);
+        test_byte_stream_split_decode::<DoubleType>(data, -1);
+    }
+
+    #[test]
+    fn test_byte_stream_split_multiple_i32() {
+        let data = vec![
+            vec![
+                i32::from_le_bytes([0xAA, 0xBB, 0xCC, 0xDD]),
+                i32::from_le_bytes([0x00, 0x11, 0x22, 0x33]),
+            ],
+            vec![i32::from_le_bytes([0xA3, 0xB4, 0xC5, 0xD6])],
+        ];
+        test_byte_stream_split_decode::<Int32Type>(data, -1);
+    }
+
+    #[test]
+    fn test_byte_stream_split_i64() {
+        let data = vec![vec![
+            i64::from_le_bytes([0, 1, 2, 3, 4, 5, 6, 7]),
+            i64::from_le_bytes([8, 9, 10, 11, 12, 13, 14, 15]),
+        ]];
+        test_byte_stream_split_decode::<Int64Type>(data, -1);
+    }
+
+    fn test_byte_stream_split_flba(type_width: usize) {
+        let data = vec![
+            vec![
+                FixedLenByteArrayType::r#gen(type_width as i32),
+                FixedLenByteArrayType::r#gen(type_width as i32),
+            ],
+            vec![FixedLenByteArrayType::r#gen(type_width as i32)],
+        ];
+        test_byte_stream_split_decode::<FixedLenByteArrayType>(data, type_width as i32);
+    }
+
+    #[test]
+    fn test_byte_stream_split_flba5() {
+        test_byte_stream_split_flba(5);
+    }
+
+    #[test]
+    fn test_byte_stream_split_flba16() {
+        test_byte_stream_split_flba(16);
+    }
+
+    #[test]
+    fn test_byte_stream_split_flba19() {
+        test_byte_stream_split_flba(19);
+    }
+
+    #[test]
+    #[should_panic(expected = "Mismatched FixedLenByteArray sizes: 4 != 5")]
+    fn test_byte_stream_split_flba_mismatch() {
+        let data = vec![
+            vec![
+                FixedLenByteArray::from(vec![0xAA, 0xAB, 0xAC, 0xAD, 0xAE]),
+                FixedLenByteArray::from(vec![0xBA, 0xBB, 0xBC, 0xBD, 0xBE]),
+            ],
+            vec![FixedLenByteArray::from(vec![0xCA, 0xCB, 0xCC, 0xCD])],
+        ];
+        test_byte_stream_split_decode::<FixedLenByteArrayType>(data, 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "Input data length is not a multiple of type width 4")]
+    fn test_byte_stream_split_flba_bad_input() {
+        let mut decoder = VariableWidthByteStreamSplitDecoder::<FixedLenByteArrayType>::new(4);
+        decoder
+            .set_data(Bytes::from(vec![1, 2, 3, 4, 5]), 1)
+            .unwrap();
     }
 
     #[test]
@@ -1808,33 +1937,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_skip_byte_stream_split_ints() {
+        let block_data = vec![3, 4, 1, 5];
+        test_skip::<Int32Type>(block_data.clone(), Encoding::BYTE_STREAM_SPLIT, 2);
+        test_skip::<Int64Type>(
+            block_data.into_iter().map(|x| x as i64).collect(),
+            Encoding::BYTE_STREAM_SPLIT,
+            100,
+        );
+    }
+
     fn test_rle_value_decode<T: DataType>(data: Vec<Vec<T::T>>) {
-        test_encode_decode::<T>(data, Encoding::RLE);
+        test_encode_decode::<T>(data, Encoding::RLE, -1);
     }
 
     fn test_delta_bit_packed_decode<T: DataType>(data: Vec<Vec<T::T>>) {
-        test_encode_decode::<T>(data, Encoding::DELTA_BINARY_PACKED);
+        test_encode_decode::<T>(data, Encoding::DELTA_BINARY_PACKED, -1);
     }
 
-    fn test_byte_stream_split_decode<T: DataType>(data: Vec<Vec<T::T>>) {
-        test_encode_decode::<T>(data, Encoding::BYTE_STREAM_SPLIT);
+    fn test_byte_stream_split_decode<T: DataType>(data: Vec<Vec<T::T>>, type_width: i32) {
+        test_encode_decode::<T>(data, Encoding::BYTE_STREAM_SPLIT, type_width);
     }
 
     fn test_delta_byte_array_decode(data: Vec<Vec<ByteArray>>) {
-        test_encode_decode::<ByteArrayType>(data, Encoding::DELTA_BYTE_ARRAY);
+        test_encode_decode::<ByteArrayType>(data, Encoding::DELTA_BYTE_ARRAY, -1);
     }
 
     // Input data represents vector of data slices to write (test multiple `put()` calls)
     // For example,
     //   vec![vec![1, 2, 3]] invokes `put()` once and writes {1, 2, 3}
     //   vec![vec![1, 2], vec![3]] invokes `put()` twice and writes {1, 2, 3}
-    fn test_encode_decode<T: DataType>(data: Vec<Vec<T::T>>, encoding: Encoding) {
-        // Type length should not really matter for encode/decode test,
-        // otherwise change it based on type
-        let col_descr = create_test_col_desc_ptr(-1, T::get_physical_type());
+    fn test_encode_decode<T: DataType>(data: Vec<Vec<T::T>>, encoding: Encoding, type_width: i32) {
+        let col_descr = create_test_col_desc_ptr(type_width, T::get_physical_type());
 
         // Encode data
-        let mut encoder = get_encoder::<T>(encoding).expect("get encoder");
+        let mut encoder = get_encoder::<T>(encoding, &col_descr).expect("get encoder");
 
         for v in &data[..] {
             encoder.put(&v[..]).expect("ok to encode");
@@ -1867,7 +2005,7 @@ mod tests {
         let col_descr = create_test_col_desc_ptr(-1, T::get_physical_type());
 
         // Encode data
-        let mut encoder = get_encoder::<T>(encoding).expect("get encoder");
+        let mut encoder = get_encoder::<T>(encoding, &col_descr).expect("get encoder");
 
         encoder.put(&data).expect("ok to encode");
 
@@ -2003,5 +2141,52 @@ mod tests {
             }
             v
         }
+    }
+
+    #[test]
+    // Allow initializing a vector and pushing to it for clarity in this test
+    #[allow(clippy::vec_init_then_push)]
+    fn test_delta_bit_packed_invalid_bit_width() {
+        // Manually craft a buffer with an invalid bit width
+        let mut buffer = vec![];
+        // block_size = 128
+        buffer.push(128);
+        buffer.push(1);
+        // mini_blocks_per_block = 4
+        buffer.push(4);
+        // num_values = 32
+        buffer.push(32);
+        // first_value = 0
+        buffer.push(0);
+        // min_delta = 0
+        buffer.push(0);
+        // bit_widths, one for each of the 4 mini blocks
+        buffer.push(33); // Invalid bit width
+        buffer.push(0);
+        buffer.push(0);
+        buffer.push(0);
+
+        let corrupted_buffer = Bytes::from(buffer);
+
+        let mut decoder = DeltaBitPackDecoder::<Int32Type>::new();
+        decoder.set_data(corrupted_buffer.clone(), 32).unwrap();
+        let mut read_buffer = vec![0; 32];
+        let err = decoder.get(&mut read_buffer).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Invalid delta bit width 33 which is larger than expected 32"),
+            "{}",
+            err
+        );
+
+        let mut decoder = DeltaBitPackDecoder::<Int32Type>::new();
+        decoder.set_data(corrupted_buffer, 32).unwrap();
+        let err = decoder.skip(32).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Invalid delta bit width 33 which is larger than expected 32"),
+            "{}",
+            err
+        );
     }
 }

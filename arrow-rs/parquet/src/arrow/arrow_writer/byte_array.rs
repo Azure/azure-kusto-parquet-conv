@@ -23,12 +23,14 @@ use crate::encodings::encoding::{DeltaBitPackEncoder, Encoder};
 use crate::encodings::rle::RleEncoder;
 use crate::errors::{ParquetError, Result};
 use crate::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
+use crate::geospatial::accumulator::{GeoStatsAccumulator, try_new_geo_stats_accumulator};
+use crate::geospatial::statistics::GeospatialStatistics;
 use crate::schema::types::ColumnDescPtr;
 use crate::util::bit_util::num_required_bits;
 use crate::util::interner::{Interner, Storage};
 use arrow_array::{
-    Array, ArrayAccessor, BinaryArray, BinaryViewArray, DictionaryArray, LargeBinaryArray,
-    LargeStringArray, StringArray, StringViewArray,
+    Array, ArrayAccessor, BinaryArray, BinaryViewArray, DictionaryArray, FixedSizeBinaryArray,
+    LargeBinaryArray, LargeStringArray, StringArray, StringViewArray,
 };
 use arrow_schema::DataType;
 
@@ -85,6 +87,9 @@ macro_rules! downcast_op {
                 DataType::LargeBinary => {
                     downcast_dict_op!(key, LargeBinaryArray, $array, $op$(, $arg)*)
                 }
+                DataType::FixedSizeBinary(_) => {
+                    downcast_dict_op!(key, FixedSizeBinaryArray, $array, $op$(, $arg)*)
+                }
                 d => unreachable!("cannot downcast {} dictionary value to byte array", d),
             },
             d => unreachable!("cannot downcast {} to byte array", d),
@@ -96,6 +101,7 @@ macro_rules! downcast_op {
 struct FallbackEncoder {
     encoder: FallbackEncoderImpl,
     num_values: usize,
+    variable_length_bytes: i64,
 }
 
 /// The fallback encoder in use
@@ -145,13 +151,14 @@ impl FallbackEncoder {
                 return Err(general_err!(
                     "unsupported encoding {} for byte array",
                     encoding
-                ))
+                ));
             }
         };
 
         Ok(Self {
             encoder,
             num_values: 0,
+            variable_length_bytes: 0,
         })
     }
 
@@ -168,7 +175,8 @@ impl FallbackEncoder {
                     let value = values.value(*idx);
                     let value = value.as_ref();
                     buffer.extend_from_slice((value.len() as u32).as_bytes());
-                    buffer.extend_from_slice(value)
+                    buffer.extend_from_slice(value);
+                    self.variable_length_bytes += value.len() as i64;
                 }
             }
             FallbackEncoderImpl::DeltaLength { buffer, lengths } => {
@@ -177,6 +185,7 @@ impl FallbackEncoder {
                     let value = value.as_ref();
                     lengths.put(&[value.len() as i32]).unwrap();
                     buffer.extend_from_slice(value);
+                    self.variable_length_bytes += value.len() as i64;
                 }
             }
             FallbackEncoderImpl::Delta {
@@ -205,11 +214,16 @@ impl FallbackEncoder {
                     buffer.extend_from_slice(&value[prefix_length..]);
                     prefix_lengths.put(&[prefix_length as i32]).unwrap();
                     suffix_lengths.put(&[suffix_length as i32]).unwrap();
+                    self.variable_length_bytes += value.len() as i64;
                 }
             }
         }
     }
 
+    /// Returns an estimate of the data page size in bytes
+    ///
+    /// This includes:
+    /// <already_written_encoded_byte_size> + <estimated_encoded_size_of_unflushed_bytes>
     fn estimated_data_page_size(&self) -> usize {
         match &self.encoder {
             FallbackEncoderImpl::Plain { buffer, .. } => buffer.len(),
@@ -265,12 +279,17 @@ impl FallbackEncoder {
             }
         };
 
+        // Capture value of variable_length_bytes and reset for next page
+        let variable_length_bytes = Some(self.variable_length_bytes);
+        self.variable_length_bytes = 0;
+
         Ok(DataPageValues {
             buf: buf.into(),
             num_values: std::mem::take(&mut self.num_values),
             encoding,
             min_value,
             max_value,
+            variable_length_bytes,
         })
     }
 }
@@ -304,6 +323,12 @@ impl Storage for ByteArrayStorage {
 
         key as u64
     }
+
+    #[allow(dead_code)] // not used in parquet_derive, so is dead there
+    fn estimated_memory_size(&self) -> usize {
+        self.page.capacity() * std::mem::size_of::<u8>()
+            + self.values.capacity() * std::mem::size_of::<std::ops::Range<usize>>()
+    }
 }
 
 /// A dictionary encoder for byte array data
@@ -311,6 +336,7 @@ impl Storage for ByteArrayStorage {
 struct DictEncoder {
     interner: Interner<ByteArrayStorage>,
     indices: Vec<u64>,
+    variable_length_bytes: i64,
 }
 
 impl DictEncoder {
@@ -326,12 +352,17 @@ impl DictEncoder {
             let value = values.value(*idx);
             let interned = self.interner.intern(value.as_ref());
             self.indices.push(interned);
+            self.variable_length_bytes += value.as_ref().len() as i64;
         }
     }
 
     fn bit_width(&self) -> u8 {
         let length = self.interner.storage().values.len();
         num_required_bits(length.saturating_sub(1) as u64)
+    }
+
+    fn estimated_memory_size(&self) -> usize {
+        self.interner.estimated_memory_size() + self.indices.capacity() * std::mem::size_of::<u64>()
     }
 
     fn estimated_data_page_size(&self) -> usize {
@@ -370,12 +401,17 @@ impl DictEncoder {
 
         self.indices.clear();
 
+        // Capture value of variable_length_bytes and reset for next page
+        let variable_length_bytes = Some(self.variable_length_bytes);
+        self.variable_length_bytes = 0;
+
         DataPageValues {
             buf: encoder.consume().into(),
             num_values,
             encoding: Encoding::RLE_DICTIONARY,
             min_value,
             max_value,
+            variable_length_bytes,
         }
     }
 }
@@ -387,6 +423,7 @@ pub struct ByteArrayEncoder {
     min_value: Option<ByteArray>,
     max_value: Option<ByteArray>,
     bloom_filter: Option<Sbbf>,
+    geo_stats_accumulator: Option<Box<dyn GeoStatsAccumulator>>,
 }
 
 impl ColumnValueEncoder for ByteArrayEncoder {
@@ -413,6 +450,8 @@ impl ColumnValueEncoder for ByteArrayEncoder {
 
         let statistics_enabled = props.statistics_enabled(descr.path());
 
+        let geo_stats_accumulator = try_new_geo_stats_accumulator(descr);
+
         Ok(Self {
             fallback,
             statistics_enabled,
@@ -420,6 +459,7 @@ impl ColumnValueEncoder for ByteArrayEncoder {
             dict_encoder: dictionary,
             min_value: None,
             max_value: None,
+            geo_stats_accumulator,
         })
     }
 
@@ -443,10 +483,34 @@ impl ColumnValueEncoder for ByteArrayEncoder {
         self.dict_encoder.is_some()
     }
 
+    fn estimated_memory_size(&self) -> usize {
+        let encoder_size = match &self.dict_encoder {
+            Some(encoder) => encoder.estimated_memory_size(),
+            // For the FallbackEncoder, these unflushed bytes are already encoded.
+            // Therefore, the size should be the same as estimated_data_page_size.
+            None => self.fallback.estimated_data_page_size(),
+        };
+
+        let bloom_filter_size = self
+            .bloom_filter
+            .as_ref()
+            .map(|bf| bf.estimated_memory_size())
+            .unwrap_or_default();
+
+        let stats_size = self.min_value.as_ref().map(|v| v.len()).unwrap_or_default()
+            + self.max_value.as_ref().map(|v| v.len()).unwrap_or_default();
+
+        encoder_size + bloom_filter_size + stats_size
+    }
+
     fn estimated_dict_page_size(&self) -> Option<usize> {
         Some(self.dict_encoder.as_ref()?.estimated_dict_page_size())
     }
 
+    /// Returns an estimate of the data page size in bytes
+    ///
+    /// This includes:
+    /// <already_written_encoded_byte_size> + <estimated_encoded_size_of_unflushed_bytes>
     fn estimated_data_page_size(&self) -> usize {
         match &self.dict_encoder {
             Some(encoder) => encoder.estimated_data_page_size(),
@@ -478,6 +542,10 @@ impl ColumnValueEncoder for ByteArrayEncoder {
             _ => self.fallback.flush_data_page(min_value, max_value),
         }
     }
+
+    fn flush_geospatial_statistics(&mut self) -> Option<Box<GeospatialStatistics>> {
+        self.geo_stats_accumulator.as_mut().map(|a| a.finish())?
+    }
 }
 
 /// Encodes the provided `values` and `indices` to `encoder`
@@ -489,12 +557,14 @@ where
     T::Item: Copy + Ord + AsRef<[u8]>,
 {
     if encoder.statistics_enabled != EnabledStatistics::None {
-        if let Some((min, max)) = compute_min_max(values, indices.iter().cloned()) {
-            if encoder.min_value.as_ref().map_or(true, |m| m > &min) {
+        if let Some(accumulator) = encoder.geo_stats_accumulator.as_mut() {
+            update_geo_stats_accumulator(accumulator.as_mut(), values, indices.iter().cloned());
+        } else if let Some((min, max)) = compute_min_max(values, indices.iter().cloned()) {
+            if encoder.min_value.as_ref().is_none_or(|m| m > &min) {
                 encoder.min_value = Some(min);
             }
 
-            if encoder.max_value.as_ref().map_or(true, |m| m < &max) {
+            if encoder.max_value.as_ref().is_none_or(|m| m < &max) {
                 encoder.max_value = Some(max);
             }
         }
@@ -536,4 +606,21 @@ where
         max = max.max(val);
     }
     Some((min.as_ref().to_vec().into(), max.as_ref().to_vec().into()))
+}
+
+/// Updates geospatial statistics for the provided array and indices
+fn update_geo_stats_accumulator<T>(
+    bounder: &mut dyn GeoStatsAccumulator,
+    array: T,
+    valid: impl Iterator<Item = usize>,
+) where
+    T: ArrayAccessor,
+    T::Item: Copy + Ord + AsRef<[u8]>,
+{
+    if bounder.is_valid() {
+        for idx in valid {
+            let val = array.value(idx);
+            bounder.update_wkb(val.as_ref());
+        }
+    }
 }

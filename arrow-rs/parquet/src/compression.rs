@@ -150,35 +150,47 @@ pub fn create_codec(codec: CodecType, _options: &CodecOptions) -> Result<Option<
         CodecType::BROTLI(level) => {
             #[cfg(any(feature = "brotli", test))]
             return Ok(Some(Box::new(BrotliCodec::new(level))));
-            Err(ParquetError::General("Disabled feature at compile time: brotli".into()))
-        },
+            Err(ParquetError::General(
+                "Disabled feature at compile time: brotli".into(),
+            ))
+        }
         CodecType::GZIP(level) => {
             #[cfg(any(feature = "flate2", test))]
             return Ok(Some(Box::new(GZipCodec::new(level))));
-            Err(ParquetError::General("Disabled feature at compile time: flate2".into()))
-        },
+            Err(ParquetError::General(
+                "Disabled feature at compile time: flate2".into(),
+            ))
+        }
         CodecType::SNAPPY => {
             #[cfg(any(feature = "snap", test))]
             return Ok(Some(Box::new(SnappyCodec::new())));
-            Err(ParquetError::General("Disabled feature at compile time: snap".into()))
-        },
+            Err(ParquetError::General(
+                "Disabled feature at compile time: snap".into(),
+            ))
+        }
         CodecType::LZ4 => {
             #[cfg(any(feature = "lz4", test))]
             return Ok(Some(Box::new(LZ4HadoopCodec::new(
                 _options.backward_compatible_lz4,
             ))));
-            Err(ParquetError::General("Disabled feature at compile time: lz4".into()))
-        },
+            Err(ParquetError::General(
+                "Disabled feature at compile time: lz4".into(),
+            ))
+        }
         CodecType::ZSTD(level) => {
             #[cfg(any(feature = "zstd", test))]
             return Ok(Some(Box::new(ZSTDCodec::new(level))));
-            Err(ParquetError::General("Disabled feature at compile time: zstd".into()))
-        },
+            Err(ParquetError::General(
+                "Disabled feature at compile time: zstd".into(),
+            ))
+        }
         CodecType::LZ4_RAW => {
             #[cfg(any(feature = "lz4", test))]
             return Ok(Some(Box::new(LZ4RawCodec::new())));
-            Err(ParquetError::General("Disabled feature at compile time: lz4".into()))
-        },
+            Err(ParquetError::General(
+                "Disabled feature at compile time: lz4".into(),
+            ))
+        }
         CodecType::UNCOMPRESSED => Ok(None),
         _ => Err(nyi_err!("The codec type {} is not supported yet", codec)),
     }
@@ -186,7 +198,7 @@ pub fn create_codec(codec: CodecType, _options: &CodecOptions) -> Result<Option<
 
 #[cfg(any(feature = "snap", test))]
 mod snappy_codec {
-    use snap::raw::{decompress_len, max_compress_len, Decoder, Encoder};
+    use snap::raw::{Decoder, Encoder, decompress_len, max_compress_len};
 
     use crate::compression::Codec;
     use crate::errors::Result;
@@ -245,7 +257,7 @@ mod gzip_codec {
 
     use std::io::{Read, Write};
 
-    use flate2::{read, write, Compression};
+    use flate2::{Compression, read, write};
 
     use crate::compression::Codec;
     use crate::errors::Result;
@@ -286,6 +298,35 @@ mod gzip_codec {
 pub use gzip_codec::*;
 
 /// Represents a valid gzip compression level.
+///
+/// Defaults to 6.
+///
+/// * 0: least compression
+/// * 9: most compression (that other software can read)
+/// * 10: most compression (incompatible with other software, see below)
+/// #### WARNING:
+/// Level 10 compression can offer smallest file size,
+/// but Parquet files created with it will not be readable
+/// by other "standard" paquet readers.
+///
+/// Do **NOT** use level 10 if you need other software to
+/// be able to read the files. Read below for details.
+///
+/// ### IMPORTANT:
+/// There's often confusion about the compression levels in `flate2` vs `arrow`
+/// as highlighted in issue [#1011](https://github.com/apache/arrow-rs/issues/6282).
+///
+/// `flate2` supports two compression backends: `miniz_oxide` and `zlib`.
+///
+/// - `zlib` supports levels from 0 to 9.
+/// - `miniz_oxide` supports levels from 0 to 10.
+///
+/// `arrow` uses `flate` with `rust_backend` feature,
+/// which provides `miniz_oxide` as the backend.
+/// Therefore 0-10 levels are supported.
+///
+/// `flate2` documents this behavior properly with
+/// [this commit](https://github.com/rust-lang/flate2-rs/pull/430).
 #[derive(Debug, Eq, PartialEq, Hash, Clone, Copy)]
 pub struct GzipLevel(u32);
 
@@ -299,7 +340,7 @@ impl Default for GzipLevel {
 
 impl CompressionLevel<u32> for GzipLevel {
     const MINIMUM_LEVEL: u32 = 0;
-    const MAXIMUM_LEVEL: u32 = 10;
+    const MAXIMUM_LEVEL: u32 = 9;
 }
 
 impl GzipLevel {
@@ -566,7 +607,7 @@ mod lz4_raw_codec {
                 None => {
                     return Err(ParquetError::General(
                         "LZ4RawCodec unsupported without uncompress_size".into(),
-                    ))
+                    ));
                 }
             };
             output_buf.resize(offset + required_len, 0);
@@ -602,9 +643,9 @@ pub use lz4_raw_codec::*;
 
 #[cfg(any(feature = "lz4", test))]
 mod lz4_hadoop_codec {
+    use crate::compression::Codec;
     use crate::compression::lz4_codec::LZ4Codec;
     use crate::compression::lz4_raw_codec::LZ4RawCodec;
-    use crate::compression::Codec;
     use crate::errors::{ParquetError, Result};
     use std::io;
 
@@ -661,15 +702,11 @@ mod lz4_hadoop_codec {
             input_len -= PREFIX_LEN;
 
             if input_len < expected_compressed_size as usize {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Not enough bytes for Hadoop frame",
-                ));
+                return Err(io::Error::other("Not enough bytes for Hadoop frame"));
             }
 
             if output_len < expected_decompressed_size as usize {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
+                return Err(io::Error::other(
                     "Not enough bytes to hold advertised output",
                 ));
             }
@@ -677,10 +714,7 @@ mod lz4_hadoop_codec {
                 lz4_flex::decompress_into(&input[..expected_compressed_size as usize], output)
                     .map_err(|e| ParquetError::External(Box::new(e)))?;
             if decompressed_size != expected_decompressed_size as usize {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Unexpected decompressed size",
-                ));
+                return Err(io::Error::other("Unexpected decompressed size"));
             }
             input_len -= expected_compressed_size as usize;
             output_len -= expected_decompressed_size as usize;
@@ -695,10 +729,7 @@ mod lz4_hadoop_codec {
         if input_len == 0 {
             Ok(read_bytes)
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Not all input are consumed",
-            ))
+            Err(io::Error::other("Not all input are consumed"))
         }
     }
 
@@ -715,7 +746,7 @@ mod lz4_hadoop_codec {
                 None => {
                     return Err(ParquetError::General(
                         "LZ4HadoopCodec unsupported without uncompress_size".into(),
-                    ))
+                    ));
                 }
             };
             output_buf.resize(output_len + required_len, 0);

@@ -17,18 +17,12 @@
 
 use crate::types::GenericStringType;
 use crate::{GenericBinaryArray, GenericByteArray, GenericListArray, OffsetSizeTrait};
-use arrow_schema::{ArrowError, DataType};
+use arrow_schema::ArrowError;
 
 /// A [`GenericByteArray`] for storing `str`
 pub type GenericStringArray<OffsetSize> = GenericByteArray<GenericStringType<OffsetSize>>;
 
 impl<OffsetSize: OffsetSizeTrait> GenericStringArray<OffsetSize> {
-    /// Get the data type of the array.
-    #[deprecated(note = "please use `Self::DATA_TYPE` instead")]
-    pub const fn get_data_type() -> DataType {
-        Self::DATA_TYPE
-    }
-
     /// Returns the number of `Unicode Scalar Value` in the string at index `i`.
     /// # Performance
     /// This function has `O(n)` time complexity where `n` is the string length.
@@ -42,7 +36,7 @@ impl<OffsetSize: OffsetSizeTrait> GenericStringArray<OffsetSize> {
     pub fn take_iter<'a>(
         &'a self,
         indexes: impl Iterator<Item = Option<usize>> + 'a,
-    ) -> impl Iterator<Item = Option<&str>> + 'a {
+    ) -> impl Iterator<Item = Option<&'a str>> {
         indexes.map(|opt_index| opt_index.map(|index| self.value(index)))
     }
 
@@ -53,8 +47,8 @@ impl<OffsetSize: OffsetSizeTrait> GenericStringArray<OffsetSize> {
     pub unsafe fn take_iter_unchecked<'a>(
         &'a self,
         indexes: impl Iterator<Item = Option<usize>> + 'a,
-    ) -> impl Iterator<Item = Option<&str>> + 'a {
-        indexes.map(|opt_index| opt_index.map(|index| self.value_unchecked(index)))
+    ) -> impl Iterator<Item = Option<&'a str>> {
+        indexes.map(|opt_index| opt_index.map(|index| unsafe { self.value_unchecked(index) }))
     }
 
     /// Fallibly creates a [`GenericStringArray`] from a [`GenericBinaryArray`] returning
@@ -162,12 +156,12 @@ pub type LargeStringArray = GenericStringArray<i64>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Array;
     use crate::builder::{ListBuilder, PrimitiveBuilder, StringBuilder};
     use crate::types::UInt8Type;
-    use crate::Array;
     use arrow_buffer::Buffer;
     use arrow_data::ArrayData;
-    use arrow_schema::Field;
+    use arrow_schema::{DataType, Field};
     use std::sync::Arc;
 
     #[test]
@@ -376,87 +370,21 @@ mod tests {
             .expect("All null array has valid array data");
     }
 
-    #[cfg(feature = "test_utils")]
-    #[test]
-    fn bad_size_collect_string() {
-        use crate::util::test_util::BadIterator;
-        let data = vec![Some("foo"), None, Some("bar")];
-        let expected: StringArray = data.clone().into_iter().collect();
-
-        // Iterator reports too many items
-        let arr: StringArray = BadIterator::new(3, 10, data.clone()).collect();
-        assert_eq!(expected, arr);
-
-        // Iterator reports too few items
-        let arr: StringArray = BadIterator::new(3, 1, data.clone()).collect();
-        assert_eq!(expected, arr);
-    }
-
-    #[cfg(feature = "test_utils")]
-    #[test]
-    fn bad_size_collect_large_string() {
-        use crate::util::test_util::BadIterator;
-        let data = vec![Some("foo"), None, Some("bar")];
-        let expected: LargeStringArray = data.clone().into_iter().collect();
-
-        // Iterator reports too many items
-        let arr: LargeStringArray = BadIterator::new(3, 10, data.clone()).collect();
-        assert_eq!(expected, arr);
-
-        // Iterator reports too few items
-        let arr: LargeStringArray = BadIterator::new(3, 1, data.clone()).collect();
-        assert_eq!(expected, arr);
-    }
-
-    #[cfg(feature = "test_utils")]
-    #[test]
-    fn bad_size_iter_values_string() {
-        use crate::util::test_util::BadIterator;
-        let data = vec!["foo", "bar", "baz"];
-        let expected: StringArray = data.clone().into_iter().map(Some).collect();
-
-        // Iterator reports too many items
-        let arr = StringArray::from_iter_values(BadIterator::new(3, 10, data.clone()));
-        assert_eq!(expected, arr);
-
-        // Iterator reports too few items
-        let arr = StringArray::from_iter_values(BadIterator::new(3, 1, data.clone()));
-        assert_eq!(expected, arr);
-    }
-
-    #[cfg(feature = "test_utils")]
-    #[test]
-    fn bad_size_iter_values_large_string() {
-        use crate::util::test_util::BadIterator;
-        let data = vec!["foo", "bar", "baz"];
-        let expected: LargeStringArray = data.clone().into_iter().map(Some).collect();
-
-        // Iterator reports too many items
-        let arr = LargeStringArray::from_iter_values(BadIterator::new(3, 10, data.clone()));
-        assert_eq!(expected, arr);
-
-        // Iterator reports too few items
-        let arr = LargeStringArray::from_iter_values(BadIterator::new(3, 1, data.clone()));
-        assert_eq!(expected, arr);
-    }
-
     fn _test_generic_string_array_from_list_array<O: OffsetSizeTrait>() {
         let values = b"HelloArrowAndParquet";
         // "ArrowAndParquet"
         let child_data = ArrayData::builder(DataType::UInt8)
             .len(15)
             .offset(5)
-            .add_buffer(Buffer::from(&values[..]))
+            .add_buffer(Buffer::from(values))
             .build()
             .unwrap();
 
         let offsets = [0, 5, 8, 15].map(|n| O::from_usize(n).unwrap());
         let null_buffer = Buffer::from_slice_ref([0b101]);
-        let data_type = GenericListArray::<O>::DATA_TYPE_CONSTRUCTOR(Arc::new(Field::new(
-            "item",
-            DataType::UInt8,
-            false,
-        )));
+        let data_type = GenericListArray::<O>::DATA_TYPE_CONSTRUCTOR(Arc::new(
+            Field::new_list_field(DataType::UInt8, false),
+        ));
 
         // [None, Some("Parquet")]
         let array_data = ArrayData::builder(data_type)
@@ -491,7 +419,7 @@ mod tests {
         let values = b"HelloArrow";
         let child_data = ArrayData::builder(DataType::UInt8)
             .len(10)
-            .add_buffer(Buffer::from(&values[..]))
+            .add_buffer(Buffer::from(values))
             .null_bit_buffer(Some(Buffer::from_slice_ref([0b1010101010])))
             .build()
             .unwrap();
@@ -500,11 +428,9 @@ mod tests {
 
         // It is possible to create a null struct containing a non-nullable child
         // see https://github.com/apache/arrow-rs/pull/3244 for details
-        let data_type = GenericListArray::<O>::DATA_TYPE_CONSTRUCTOR(Arc::new(Field::new(
-            "item",
-            DataType::UInt8,
-            true,
-        )));
+        let data_type = GenericListArray::<O>::DATA_TYPE_CONSTRUCTOR(Arc::new(
+            Field::new_list_field(DataType::UInt8, true),
+        ));
 
         // [None, Some(b"Parquet")]
         let array_data = ArrayData::builder(data_type)
@@ -533,16 +459,14 @@ mod tests {
         let values = b"HelloArrow";
         let child_data = ArrayData::builder(DataType::UInt16)
             .len(5)
-            .add_buffer(Buffer::from(&values[..]))
+            .add_buffer(Buffer::from(values))
             .build()
             .unwrap();
 
         let offsets = [0, 2, 3].map(|n| O::from_usize(n).unwrap());
-        let data_type = GenericListArray::<O>::DATA_TYPE_CONSTRUCTOR(Arc::new(Field::new(
-            "item",
-            DataType::UInt16,
-            false,
-        )));
+        let data_type = GenericListArray::<O>::DATA_TYPE_CONSTRUCTOR(Arc::new(
+            Field::new_list_field(DataType::UInt16, false),
+        ));
 
         let array_data = ArrayData::builder(data_type)
             .len(2)

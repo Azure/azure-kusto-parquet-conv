@@ -25,7 +25,7 @@ use crate::arrow::array_reader::ArrayReader;
 use crate::basic::{ConvertedType, Encoding, Type as PhysicalType};
 use crate::column::page::{PageIterator, PageReader};
 use crate::data_type::{ByteArray, ByteArrayType};
-use crate::encodings::encoding::{get_encoder, DictEncoder, Encoder};
+use crate::encodings::encoding::{DictEncoder, Encoder, get_encoder};
 use crate::errors::Result;
 use crate::schema::types::{ColumnDescPtr, ColumnDescriptor, ColumnPath, Type};
 
@@ -46,7 +46,8 @@ pub fn utf8_column() -> ColumnDescPtr {
 
 /// Encode `data` with the provided `encoding`
 pub fn encode_byte_array(encoding: Encoding, data: &[ByteArray]) -> Bytes {
-    let mut encoder = get_encoder::<ByteArrayType>(encoding).unwrap();
+    let desc = utf8_column();
+    let mut encoder = get_encoder::<ByteArrayType>(encoding, &desc).unwrap();
 
     encoder.put(data).unwrap();
     encoder.flush_buffer().unwrap()
@@ -108,15 +109,19 @@ impl InMemoryArrayReader {
         def_levels: Option<Vec<i16>>,
         rep_levels: Option<Vec<i16>>,
     ) -> Self {
-        assert!(def_levels
-            .as_ref()
-            .map(|d| d.len() == array.len())
-            .unwrap_or(true));
+        assert!(
+            def_levels
+                .as_ref()
+                .map(|d| d.len() == array.len())
+                .unwrap_or(true)
+        );
 
-        assert!(rep_levels
-            .as_ref()
-            .map(|r| r.len() == array.len())
-            .unwrap_or(true));
+        assert!(
+            rep_levels
+                .as_ref()
+                .map(|r| r.len() == array.len())
+                .unwrap_or(true)
+        );
 
         Self {
             data_type,
